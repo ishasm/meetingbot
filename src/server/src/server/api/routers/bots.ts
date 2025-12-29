@@ -162,6 +162,7 @@ export const botsRouter = createTRPCRouter({
           id: z.number(),
           status: status,
           recording: z.string().optional(),
+          mp3: z.string().nullable().optional(),
           speakerTimeframes: z.array(speakerTimeframeSchema).optional()
         })
         .refine(
@@ -203,10 +204,14 @@ export const botsRouter = createTRPCRouter({
       }
 
       if (input.status === "DONE") {
-        // add the recording to the bot
+        // add the recording and mp3 to the bot
         await ctx.db
           .update(bots)
-          .set({ recording: input.recording, speakerTimeframes: input.speakerTimeframes })
+          .set({ 
+            recording: input.recording, 
+            mp3: input.mp3,
+            speakerTimeframes: input.speakerTimeframes 
+          })
           .where(eq(bots.id, bot.id));
 
         if (bot.callbackUrl) {
@@ -262,7 +267,7 @@ export const botsRouter = createTRPCRouter({
         method: "GET",
         path: "/bots/{id}/recording",
         description:
-          "Retrieve a signed URL for the recording associated with a specific bot",
+          "Retrieve a signed URL for the video recording associated with a specific bot",
       },
     })
     .input(z.object({ id: z.number() }))
@@ -283,6 +288,35 @@ export const botsRouter = createTRPCRouter({
 
       const signedUrl = await generateSignedUrl(result[0].recording);
       return { recordingUrl: signedUrl };
+    }),
+
+  getSignedAudioUrl: protectedProcedure
+    .meta({
+      openapi: {
+        method: "GET",
+        path: "/bots/{id}/audio",
+        description:
+          "Retrieve a signed URL for the extracted MP3 audio associated with a specific bot",
+      },
+    })
+    .input(z.object({ id: z.number() }))
+    .output(z.object({ audioUrl: z.string().nullable() }))
+    .query(async ({ input, ctx }) => {
+      const result = await ctx.db
+        .select({ mp3: bots.mp3 })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      if (!result[0]) {
+        throw new Error("Bot not found");
+      }
+
+      if (!result[0].mp3) {
+        return { audioUrl: null };
+      }
+
+      const signedUrl = await generateSignedUrl(result[0].mp3);
+      return { audioUrl: signedUrl };
     }),
 
   heartbeat: publicProcedure

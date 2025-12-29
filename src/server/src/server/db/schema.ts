@@ -249,6 +249,7 @@ export const bots = pgTable("bots", {
   endTime: timestamp("end_time").notNull(),
   // recording stuff
   recording: varchar("recording", { length: 255 }),
+  mp3: varchar("mp3", { length: 255 }),
   speakerTimeframes: json('speaker_timeframes')
     .$type<SpeakerTimeframe[]>()
     .notNull()

@@ -1,7 +1,18 @@
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { readFileSync, promises as fsPromises } from "fs";
+import { spawn } from "child_process";
 import { Bot } from "./bot";
 import { randomUUID } from "crypto";
+
+/**
+ * Result of uploading a recording to S3
+ */
+export interface UploadResult {
+    /** S3 key for the video file (MP4) */
+    videoKey: string;
+    /** S3 key for the extracted audio file (MP3), null if extraction failed */
+    audioKey: string | null;
+}
 
 /**
  * Creates an S3 Connection to the bucket.
@@ -42,11 +53,73 @@ export function createS3Client(region: string | undefined, accessKeyId: string |
 }
 
 /**
+ * Extracts audio from a video buffer and returns optimized MP3 audio.
+ * Converts to mono, 16kHz, 64kbps - optimal for transcription APIs.
  * 
- * @param s3Client 
- * @param filePath 
+ * @param videoBuffer - The input video buffer (MP4)
+ * @returns Promise resolving to the extracted audio as a Buffer
  */
-export async function uploadRecordingToS3(s3Client: S3Client, bot: Bot): Promise<string> {
+async function extractAudioFromVideo(videoBuffer: Buffer): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+
+        // FFmpeg args for optimized transcription audio
+        // mono, 16kHz, 64kbps MP3 - optimal for speech recognition
+        const ffmpegArgs = [
+            "-i", "pipe:0",           // Read from stdin
+            "-vn",                    // No video
+            "-acodec", "libmp3lame",  // MP3 codec
+            "-ar", "16000",           // 16kHz sample rate (optimal for speech)
+            "-ac", "1",               // Mono
+            "-b:a", "64k",            // 64kbps bitrate
+            "-f", "mp3",              // MP3 format
+            "pipe:1",                 // Write to stdout
+        ];
+
+        const ffmpeg = spawn("ffmpeg", ffmpegArgs);
+
+        ffmpeg.stdout.on("data", (chunk: Buffer) => {
+            chunks.push(chunk);
+        });
+
+        let stderrOutput = "";
+        ffmpeg.stderr.on("data", (data: Buffer) => {
+            stderrOutput += data.toString();
+        });
+
+        ffmpeg.on("close", (code) => {
+            if (code === 0) {
+                console.log("Audio extraction completed successfully");
+                resolve(Buffer.concat(chunks));
+            } else {
+                reject(new Error(`FFmpeg exited with code ${code}. stderr: ${stderrOutput.slice(-500)}`));
+            }
+        });
+
+        ffmpeg.on("error", (err) => {
+            reject(new Error(`Failed to spawn FFmpeg: ${err.message}`));
+        });
+
+        ffmpeg.stdin.on("error", (err) => {
+            // Ignore EPIPE errors (FFmpeg may close stdin early)
+            if ((err as NodeJS.ErrnoException).code !== "EPIPE") {
+                reject(new Error(`FFmpeg stdin error: ${err.message}`));
+            }
+        });
+
+        ffmpeg.stdin.write(videoBuffer);
+        ffmpeg.stdin.end();
+    });
+}
+
+/**
+ * Uploads a recording to S3, including both video and extracted audio.
+ * 
+ * @param s3Client - The S3 client instance
+ * @param bot - The bot instance containing recording info
+ * @returns Promise resolving to UploadResult with video and audio keys
+ */
+export async function uploadRecordingToS3(s3Client: S3Client, bot: Bot): Promise<UploadResult> {
 
     // Attempt to read the file path. Allow for time for the file to become available.
     const filePath = bot.getRecordingPath();
@@ -87,34 +160,85 @@ export async function uploadRecordingToS3(s3Client: S3Client, bot: Bot): Promise
         }
     }
 
-    // Create UUID and initialize key
+    // Create UUID and initialize keys
     const uuid = randomUUID();
     const contentType = bot.getContentType();
-    const key = `recordings/${uuid}-${bot.settings.meetingInfo.platform
-        }-recording.${contentType.split("/")[1]}`;
+    const platform = bot.settings.meetingInfo.platform;
+    const videoExtension = contentType.split("/")[1];
+    
+    const videoKey = `recordings/${uuid}-${platform}-recording.${videoExtension}`;
+    const audioKey = `recordings/${uuid}-${platform}-audio.mp3`;
+
+    let uploadedVideoKey = '';
+    let uploadedAudioKey: string | null = null;
 
     try {
-        const commandObjects = {
+        // Upload video file
+        const videoCommandObjects = {
             Bucket: process.env.AWS_BUCKET_NAME!,
-            Key: key,
+            Key: videoKey,
             Body: fileContent,
             ContentType: contentType,
         };
 
-        const putCommand = new PutObjectCommand(commandObjects);
-        await s3Client.send(putCommand);
-        console.log(`Successfully uploaded recording to S3: ${key}`);
-
-        // Clean up local file
-        await fsPromises.unlink(filePath);
-
-        // Return the Upload Key
-        return key;
+        const videoPutCommand = new PutObjectCommand(videoCommandObjects);
+        await s3Client.send(videoPutCommand);
+        console.log(`Successfully uploaded video recording to S3: ${videoKey}`);
+        uploadedVideoKey = videoKey;
 
     } catch (error) {
-        console.error("Error uploading to S3:", error);
+        console.error("Error uploading video to S3:", error);
+        // Clean up local file even if upload fails
+        await fsPromises.unlink(filePath).catch(() => {});
+        return { videoKey: '', audioKey: null };
     }
 
-    // No Upload
-    return '';
+    // Extract and upload audio
+    try {
+        console.log("Starting audio extraction from video...");
+        const audioBuffer = await extractAudioFromVideo(fileContent);
+        console.log(`Audio extracted successfully, size: ${audioBuffer.length} bytes`);
+
+        const audioCommandObjects = {
+            Bucket: process.env.AWS_BUCKET_NAME!,
+            Key: audioKey,
+            Body: audioBuffer,
+            ContentType: "audio/mpeg",
+        };
+
+        const audioPutCommand = new PutObjectCommand(audioCommandObjects);
+        await s3Client.send(audioPutCommand);
+        console.log(`Successfully uploaded audio to S3: ${audioKey}`);
+        uploadedAudioKey = audioKey;
+
+    } catch (error) {
+        // Audio extraction/upload failed, but video was uploaded successfully
+        // Log error but don't fail the entire operation
+        console.error("Error extracting/uploading audio:", error);
+        console.log("Video upload succeeded, but audio extraction failed. Continuing...");
+    }
+
+    // Clean up local file
+    try {
+        await fsPromises.unlink(filePath);
+        console.log("Local recording file cleaned up");
+    } catch (error) {
+        console.error("Error cleaning up local file:", error);
+    }
+
+    return {
+        videoKey: uploadedVideoKey,
+        audioKey: uploadedAudioKey,
+    };
+}
+
+/**
+ * Legacy function signature for backward compatibility.
+ * Returns just the video key as a string.
+ * 
+ * @deprecated Use uploadRecordingToS3 which returns UploadResult
+ */
+export async function uploadRecordingToS3Legacy(s3Client: S3Client, bot: Bot): Promise<string> {
+    const result = await uploadRecordingToS3(s3Client, bot);
+    return result.videoKey;
 }

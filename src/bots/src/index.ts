@@ -1,8 +1,8 @@
-import { Bot, createBot } from "./bot";
+import { createBot } from "./bot";
 import dotenv from "dotenv";
 import { startHeartbeat, reportEvent } from "./monitoring";
 import { EventCode, type BotConfig } from "./types";
-import { createS3Client, uploadRecordingToS3 } from "./s3";
+import { createS3Client, uploadRecordingToS3, type UploadResult } from "./s3";
 
 dotenv.config({path: '../test.env'}); // Load test.env for testing
 dotenv.config();
@@ -28,8 +28,8 @@ export const main = async () => {
   console.log("Received bot data:", botData);
   const botId = botData.id;
 
-  // Declare key variable at the top level of the function
-  let key: string = "";
+  // Declare upload result at the top level of the function
+  let uploadResult: UploadResult = { videoKey: '', audioKey: null };
 
   // Initialize S3 client
   const s3Client = createS3Client(process.env.AWS_REGION!, process.env.AWS_ACCESS_KEY_ID, process.env.AWS_SECRET_ACCESS_KEY);
@@ -70,9 +70,9 @@ export const main = async () => {
       await bot.endLife();
     });
 
-    // Upload recording to S3
+    // Upload recording to S3 (both video and extracted audio)
     console.log("Start Upload to S3...");
-    key = await uploadRecordingToS3(s3Client, bot);
+    uploadResult = await uploadRecordingToS3(s3Client, bot);
 
 
   } catch (error) {
@@ -89,10 +89,14 @@ export const main = async () => {
 
   // Only report DONE if no error occurred
   if (!hasErrorOccurred) {
-    // Report final DONE event
+    // Report final DONE event with both video and audio keys
     const speakerTimeframes = bot.getSpeakerTimeframes();
     console.debug("Speaker timeframes:", speakerTimeframes);
-    await reportEvent(botId, EventCode.DONE, { recording: key, speakerTimeframes });
+    await reportEvent(botId, EventCode.DONE, { 
+      recording: uploadResult.videoKey,        // Video key (backward compatible)
+      mp3: uploadResult.audioKey,              // Audio key (new field)
+      speakerTimeframes 
+    });
   }
 
   // Exit with appropriate code

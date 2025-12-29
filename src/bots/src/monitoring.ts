@@ -55,12 +55,13 @@ export const reportEvent = async (
 
     // Update bot status if this event type is a valid status
     if (eventType in Status) {
-      // If the event is DONE, we need to include the recording parameter
+      // If the event is DONE, we need to include the recording and mp3 parameters
       if (eventType === EventCode.DONE && eventData?.recording) {
         await trpc.bots.updateBotStatus.mutate({
           id: botId,
           status: eventType as unknown as Status,
           recording: eventData.recording,
+          mp3: eventData.mp3 ?? null,
           speakerTimeframes: eventData.speakerTimeframes,
         });
       } else {

@@ -15,9 +15,9 @@ const globalForDb = globalThis as unknown as {
 const conn =
   globalForDb.conn ??
   postgres(env.DATABASE_URL, {
-    ssl: {
+    ssl: env.NODE_ENV === "production" && !process.env.PGSSLMODE ? {
       rejectUnauthorized: false,
-    },
+    } : false,
     max: 1,
   });
 if (env.NODE_ENV !== "production") globalForDb.conn = conn;

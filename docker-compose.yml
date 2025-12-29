@@ -11,7 +11,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     ports:
-      - "5432:5432"
+      - "5433:5432"
     networks:
       - meetingbot_network
     restart: unless-stopped
@@ -42,6 +42,7 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://postgres:password@postgres:5432/meetingbot
+      PGSSLMODE: disable
       AUTH_SECRET: QTD54ABfY4oiz8lvM6lZ+83BdZiouaHENqKWvcN7i+0=
       AUTH_GITHUB_ID: ${AUTH_GITHUB_ID}
       AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET}
@@ -56,9 +57,10 @@ services:
       # Docker deployment settings
       DEPLOYMENT_MODE: docker-compose
       NEXTAUTH_URL: http://localhost:3000
+      BACKEND_URL: http://server:3000
       NEXTAUTH_TRUST_HOST: "true"
       DOCKER_HOST: unix:///var/run/docker.sock
-      BOT_NETWORK: meetingbot_network
+      BOT_NETWORK: meetingbot_meetingbot_network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - recordings:/app/recordings

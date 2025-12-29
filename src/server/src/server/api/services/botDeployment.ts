@@ -127,7 +127,7 @@ export async function deployBotWithDockerCompose(
     `-e AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}`,
     `-e S3_ENDPOINT=${env.S3_ENDPOINT}`,
     `-e S3_FORCE_PATH_STYLE=${env.S3_FORCE_PATH_STYLE}`,
-    `-e BACKEND_URL=${env.NEXTAUTH_URL ?? 'http://server:3000'}/api/trpc`,
+    `-e BACKEND_URL=${process.env.BACKEND_URL ?? env.NEXTAUTH_URL ?? 'http://server:3000'}/api/trpc`,
     `-e NODE_ENV=production`,
     `-e DISPLAY=:99`,
   ].join(' ');
