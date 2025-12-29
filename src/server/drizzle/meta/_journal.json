@@ -15,6 +15,13 @@
       "when": 1735500000000,
       "tag": "0001_add_mp3_column",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1735500100000,
+      "tag": "0002_add_transcription_columns",
+      "breakpoints": true
     }
   ]
 }

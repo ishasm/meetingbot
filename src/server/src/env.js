@@ -82,6 +82,12 @@ export const env = createEnv({
     NEXTAUTH_URL: z.string().url().optional(),
     AUTH_TRUST_HOST: z.string().optional(),
     NEXTAUTH_TRUST_HOST: z.string().optional(),
+    // Transcription provider settings
+    TRANSCRIPTION_PROVIDER: z.enum(["openai", "assemblyai", "whisper-self-hosted"]).optional(),
+    OPENAI_API_KEY: z.string().optional(),
+    ASSEMBLYAI_API_KEY: z.string().optional(),
+    WHISPER_API_URL: z.string().optional(),
+    WHISPER_API_KEY: z.string().optional(),
   },
 
   /**
@@ -122,6 +128,12 @@ export const env = createEnv({
     NEXTAUTH_URL: process.env.NEXTAUTH_URL,
     AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST,
     NEXTAUTH_TRUST_HOST: process.env.NEXTAUTH_TRUST_HOST,
+    // Transcription provider settings
+    TRANSCRIPTION_PROVIDER: process.env.TRANSCRIPTION_PROVIDER,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY,
+    WHISPER_API_URL: process.env.WHISPER_API_URL,
+    WHISPER_API_KEY: process.env.WHISPER_API_KEY,
   },
   /**
    * Run `build` or `dev` with `SKIP_ENV_VALIDATION` to skip env validation. This is especially

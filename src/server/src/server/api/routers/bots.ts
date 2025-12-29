@@ -13,6 +13,38 @@ import { eq, sql, and, notInArray } from "drizzle-orm";
 import { deployBot, shouldDeployImmediately } from "../services/botDeployment";
 import { extractCount } from "~/server/utils/database";
 import { generateSignedUrl } from "~/server/utils/s3";
+import { 
+  getTranscriptionService, 
+  type TranscriptionProvider,
+  type TranscriptionResult,
+  TranscriptionError,
+} from "~/server/services/transcription";
+
+// Transcription provider enum for API validation
+const transcriptionProviderSchema = z.enum(["openai", "assemblyai", "whisper-self-hosted"]);
+
+// Transcription result schema for API output
+const transcriptionResultSchema = z.object({
+  text: z.string(),
+  language: z.string().optional(),
+  duration: z.number().optional(),
+  segments: z.array(z.object({
+    start: z.number(),
+    end: z.number(),
+    text: z.string(),
+    speaker: z.string().optional(),
+    confidence: z.number().optional(),
+  })).optional(),
+  words: z.array(z.object({
+    word: z.string(),
+    start: z.number(),
+    end: z.number(),
+    confidence: z.number().optional(),
+    speaker: z.string().optional(),
+  })).optional(),
+  provider: transcriptionProviderSchema,
+  processingTimeMs: z.number().optional(),
+});
 
 export const botsRouter = createTRPCRouter({
   getBots: protectedProcedure
@@ -420,5 +452,218 @@ export const botsRouter = createTRPCRouter({
         );
 
       return { count: extractCount(result) };
+    }),
+
+  // ============================================================================
+  // Transcription Endpoints
+  // ============================================================================
+
+  getAvailableTranscriptionProviders: protectedProcedure
+    .meta({
+      openapi: {
+        method: "GET",
+        path: "/transcription/providers",
+        description: "Get list of available transcription providers based on configured API keys",
+      },
+    })
+    .input(z.object({}))
+    .output(z.object({ 
+      providers: z.array(transcriptionProviderSchema),
+      defaultProvider: transcriptionProviderSchema.optional(),
+    }))
+    .query(async () => {
+      const service = getTranscriptionService();
+      const providers = await service.getAvailableProviders();
+      
+      return { 
+        providers,
+        defaultProvider: providers[0],
+      };
+    }),
+
+  transcribeBot: protectedProcedure
+    .meta({
+      openapi: {
+        method: "POST",
+        path: "/bots/{id}/transcribe",
+        description: "Transcribe the audio recording of a bot using the specified provider. Speaker diarization is enhanced using speaker timeframes captured during the meeting.",
+      },
+    })
+    .input(z.object({
+      id: z.number(),
+      provider: transcriptionProviderSchema.optional(),
+      language: z.string().optional(),
+      speakerDiarization: z.boolean().default(true),
+      saveToDatabase: z.boolean().default(true),
+    }))
+    .output(transcriptionResultSchema)
+    .mutation(async ({ input, ctx }) => {
+      // Get the bot and verify ownership
+      const botResult = await ctx.db
+        .select({ 
+          mp3: bots.mp3, 
+          recording: bots.recording,
+          userId: bots.userId,
+          status: bots.status,
+          speakerTimeframes: bots.speakerTimeframes,
+        })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      const bot = botResult[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      if (bot.status !== "DONE") {
+        throw new Error("Bot recording is not complete yet");
+      }
+
+      // Prefer MP3 audio (already optimized for transcription)
+      const audioKey = bot.mp3 ?? bot.recording;
+      if (!audioKey) {
+        throw new Error("No recording available for this bot");
+      }
+
+      // Get signed URL for the audio
+      const audioUrl = await generateSignedUrl(audioKey);
+
+      // Transcribe using the service
+      const service = getTranscriptionService();
+      
+      try {
+        // Pass speaker timeframes to improve diarization and map speaker names
+        const result = await service.transcribeFromUrl(audioUrl, {
+          provider: input.provider,
+          language: input.language,
+          speakerDiarization: input.speakerDiarization,
+          speakerTimeframes: bot.speakerTimeframes ?? undefined,
+        });
+
+        // Save transcription to database if requested
+        if (input.saveToDatabase) {
+          await ctx.db
+            .update(bots)
+            .set({ 
+              transcription: result.text,
+              transcriptionProvider: result.provider,
+            })
+            .where(eq(bots.id, input.id));
+        }
+
+        return result;
+      } catch (error) {
+        if (error instanceof TranscriptionError) {
+          throw new Error(`Transcription failed (${error.provider}): ${error.message}`);
+        }
+        throw error;
+      }
+    }),
+
+  getTranscription: protectedProcedure
+    .meta({
+      openapi: {
+        method: "GET",
+        path: "/bots/{id}/transcription",
+        description: "Get the stored transcription for a bot",
+      },
+    })
+    .input(z.object({ id: z.number() }))
+    .output(z.object({
+      transcription: z.string().nullable(),
+      transcriptionProvider: z.string().nullable(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const result = await ctx.db
+        .select({ 
+          transcription: bots.transcription,
+          transcriptionProvider: bots.transcriptionProvider,
+          userId: bots.userId,
+        })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      const bot = result[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      return {
+        transcription: bot.transcription,
+        transcriptionProvider: bot.transcriptionProvider,
+      };
+    }),
+
+  generateSummary: protectedProcedure
+    .meta({
+      openapi: {
+        method: "POST",
+        path: "/bots/{id}/summary",
+        description: "Generate a summary of the meeting transcription using AI",
+      },
+    })
+    .input(z.object({
+      id: z.number(),
+      customPrompt: z.string().optional(),
+    }))
+    .output(z.object({
+      summary: z.string(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // Get the bot and verify ownership
+      const result = await ctx.db
+        .select({ 
+          transcription: bots.transcription,
+          userId: bots.userId,
+          meetingTitle: bots.meetingTitle,
+        })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      const bot = result[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      if (!bot.transcription) {
+        throw new Error("No transcription available. Please transcribe the recording first.");
+      }
+
+      // Check if OpenAI is available for summarization
+      const openaiKey = process.env.OPENAI_API_KEY;
+      if (!openaiKey) {
+        throw new Error("OpenAI API key not configured for summary generation");
+      }
+
+      const systemPrompt = input.customPrompt ?? 
+        "You are a helpful assistant that summarizes meeting transcripts. Provide a concise summary including key discussion points, decisions made, and action items.";
+
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${openaiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { 
+              role: "user", 
+              content: `Please summarize this meeting transcript for "${bot.meetingTitle}":\n\n${bot.transcription}` 
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to generate summary: ${errorText}`);
+      }
+
+      const data = await response.json();
+      const summary = data.choices?.[0]?.message?.content ?? "Unable to generate summary";
+
+      return { summary };
     }),
 });
