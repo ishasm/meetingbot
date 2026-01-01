@@ -666,4 +666,179 @@ export const botsRouter = createTRPCRouter({
 
       return { summary };
     }),
+
+  // ============================================================================
+  // User Meetings Endpoints (for user portal)
+  // ============================================================================
+
+  getUserMeetings: protectedProcedure
+    .meta({
+      openapi: {
+        method: "GET",
+        path: "/meetings",
+        description: "Get simplified meeting list for user dashboard",
+      },
+    })
+    .input(z.object({
+      limit: z.number().optional().default(50),
+      offset: z.number().optional().default(0),
+    }))
+    .output(z.object({
+      meetings: z.array(z.object({
+        id: z.number(),
+        meetingTitle: z.string(),
+        platform: z.string().nullable(),
+        status: z.string(),
+        createdAt: z.date().nullable(),
+        hasTranscription: z.boolean(),
+        hasRecording: z.boolean(),
+      })),
+      total: z.number(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const result = await ctx.db
+        .select({
+          id: bots.id,
+          meetingTitle: bots.meetingTitle,
+          meetingInfo: bots.meetingInfo,
+          status: bots.status,
+          createdAt: bots.createdAt,
+          transcription: bots.transcription,
+          recording: bots.recording,
+        })
+        .from(bots)
+        .where(eq(bots.userId, ctx.session.user.id))
+        .orderBy(bots.createdAt)
+        .limit(input.limit)
+        .offset(input.offset);
+
+      const countResult = await ctx.db
+        .select({ count: sql<number>`count(*)` })
+        .from(bots)
+        .where(eq(bots.userId, ctx.session.user.id));
+
+      const meetings = result.map((bot) => ({
+        id: bot.id,
+        meetingTitle: bot.meetingTitle,
+        platform: bot.meetingInfo?.platform ?? null,
+        status: bot.status,
+        createdAt: bot.createdAt,
+        hasTranscription: !!bot.transcription,
+        hasRecording: !!bot.recording,
+      }));
+
+      return {
+        meetings,
+        total: extractCount(countResult),
+      };
+    }),
+
+  createMeeting: protectedProcedure
+    .meta({
+      openapi: {
+        method: "POST",
+        path: "/meetings",
+        description: "Create a new meeting and deploy bot",
+      },
+    })
+    .input(z.object({
+      meetingUrl: z.string().url(),
+      meetingTitle: z.string().optional(),
+      botDisplayName: z.string().optional(),
+    }))
+    .output(selectBotSchema)
+    .mutation(async ({ input, ctx }) => {
+      // Parse meeting URL to determine platform
+      const meetingInfo = parseMeetingUrl(input.meetingUrl);
+      if (!meetingInfo) {
+        throw new Error("Invalid meeting URL. Please provide a valid Google Meet, Zoom, or Teams meeting link.");
+      }
+
+      const dbInput = {
+        botDisplayName: input.botDisplayName ?? "MeetingBot",
+        userId: ctx.session.user.id,
+        meetingTitle: input.meetingTitle ?? "Meeting",
+        meetingInfo,
+        startTime: new Date(),
+        endTime: new Date(),
+        heartbeatInterval: 5000,
+        automaticLeave: {
+          waitingRoomTimeout: 300000,
+          noOneJoinedTimeout: 300000,
+          everyoneLeftTimeout: 300000,
+          inactivityTimeout: 300000,
+        },
+      };
+
+      const result = await ctx.db.insert(bots).values(dbInput).returning();
+
+      if (!result[0]) {
+        throw new Error("Failed to create meeting");
+      }
+
+      // Deploy bot immediately
+      if (await shouldDeployImmediately(new Date())) {
+        return await deployBot({
+          botId: result[0].id,
+          db: ctx.db,
+        });
+      }
+
+      return result[0];
+    }),
 });
+
+// Helper function to parse meeting URLs
+function parseMeetingUrl(url: string): { platform: "google" | "zoom" | "teams"; meetingUrl?: string; meetingId?: string; meetingPassword?: string; organizerId?: string; tenantId?: string } | null {
+  // Google Meet
+  if (url.includes("meet.google.com")) {
+    return {
+      platform: "google",
+      meetingUrl: url,
+    };
+  }
+
+  // Zoom
+  if (url.includes("zoom.us")) {
+    const zoomMatch = url.match(/\/j\/(\d+)/);
+    const pwdMatch = url.match(/pwd=([^&]+)/);
+    if (zoomMatch) {
+      return {
+        platform: "zoom",
+        meetingId: zoomMatch[1],
+        meetingPassword: pwdMatch?.[1] ?? "",
+      };
+    }
+  }
+
+  // Teams
+  if (url.includes("teams.microsoft.com") || url.includes("teams.live.com")) {
+    try {
+      const urlObj = new URL(url);
+      const pathSegments = urlObj.pathname.split('/');
+      const meetingSegment = pathSegments.find(segment => segment.startsWith('19%3ameeting_') || segment.startsWith('19:meeting_'));
+      
+      if (meetingSegment) {
+        const params = new URLSearchParams(urlObj.search);
+        const context = params.get("context");
+        
+        if (context) {
+          const contextObj = JSON.parse(decodeURIComponent(context));
+          const decoded = decodeURIComponent(meetingSegment);
+          const meetingId = decoded.replace('19:meeting_', '').split('@')[0];
+          
+          return {
+            platform: "teams",
+            meetingId: meetingId ?? "",
+            organizerId: contextObj.Oid ?? "",
+            tenantId: contextObj.Tid ?? "",
+          };
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}

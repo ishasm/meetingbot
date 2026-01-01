@@ -33,7 +33,30 @@ export const users = pgTable("user", {
   emailVerified: timestamp("emailVerified", { mode: "date" }),
   image: text("image"),
   createdAt: timestamp("createdAt").defaultNow(),
+  // New fields for email/password auth and role management
+  role: varchar("role", { length: 20 }).default("user"), // "admin" | "user"
+  password: text("password"), // hashed password for email auth
 });
+
+// User schemas for API validation
+export const insertUserSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+export const selectUserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+  emailVerified: z.date().nullable(),
+  image: z.string().nullable(),
+  createdAt: z.date().nullable(),
+  role: z.string().nullable(),
+});
+
+export type InsertUserType = z.infer<typeof insertUserSchema>;
+export type SelectUserType = z.infer<typeof selectUserSchema>;
 
 export const accounts = pgTable(
   "account",
@@ -377,3 +400,43 @@ export const dailyUsageSchema = z.object({
 });
 
 export type DailyUsageType = z.infer<typeof dailyUsageSchema>;
+
+/** ACTION ITEMS */
+export const actionItems = pgTable("action_items", {
+  id: serial("id").primaryKey(),
+  botId: integer("bot_id")
+    .references(() => bots.id, { onDelete: "cascade" })
+    .notNull(),
+  userId: uuid("user_id")
+    .references(() => users.id, { onDelete: "cascade" })
+    .notNull(),
+  content: text("content").notNull(),
+  assignee: varchar("assignee", { length: 255 }),
+  dueDate: timestamp("due_date"),
+  isCompleted: boolean("is_completed").default(false),
+  priority: varchar("priority", { length: 20 }).default("medium"), // "low" | "medium" | "high"
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertActionItemSchema = z.object({
+  botId: z.number(),
+  content: z.string().min(1, "Content is required"),
+  assignee: z.string().optional(),
+  dueDate: z.date().optional(),
+  priority: z.enum(["low", "medium", "high"]).optional().default("medium"),
+});
+
+export const selectActionItemSchema = createSelectSchema(actionItems);
+export const updateActionItemSchema = z.object({
+  id: z.number(),
+  content: z.string().optional(),
+  assignee: z.string().nullable().optional(),
+  dueDate: z.date().nullable().optional(),
+  isCompleted: z.boolean().optional(),
+  priority: z.enum(["low", "medium", "high"]).optional(),
+});
+
+export type InsertActionItemType = z.infer<typeof insertActionItemSchema>;
+export type SelectActionItemType = z.infer<typeof selectActionItemSchema>;
+export type UpdateActionItemType = z.infer<typeof updateActionItemSchema>;

@@ -209,6 +209,7 @@ export const protectedProcedure = t.procedure
               id: dbUser[0].id,
               name: dbUser[0].name,
               email: dbUser[0].email,
+              role: dbUser[0].role ?? "user",
             },
             expires: apiKey.expiresAt
               ? apiKey.expiresAt.toISOString()
