@@ -61,6 +61,12 @@ services:
       NEXTAUTH_TRUST_HOST: "true"
       DOCKER_HOST: unix:///var/run/docker.sock
       BOT_NETWORK: meetingbot_meetingbot_network
+      # Transcription provider settings
+      TRANSCRIPTION_PROVIDER: ${TRANSCRIPTION_PROVIDER:-assemblyai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
+      WHISPER_API_URL: ${WHISPER_API_URL:-}
+      WHISPER_API_KEY: ${WHISPER_API_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - recordings:/app/recordings
