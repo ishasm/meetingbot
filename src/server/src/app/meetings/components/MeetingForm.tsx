@@ -44,7 +44,7 @@ export function MeetingForm({ onSuccess }: MeetingFormProps) {
       setMeetingUrl("");
       setMeetingTitle("");
       setErrorMessage(null);
-      utils.bots.getUserMeetings.invalidate();
+      void utils.bots.getUserMeetings.invalidate();
       onSuccess?.();
     },
     onError: (error) => {

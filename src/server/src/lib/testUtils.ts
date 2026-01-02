@@ -136,7 +136,7 @@ const mockUseSession = ({
     case "authenticated":
       return {
         data: {
-          user: { id: "fake_user_id" },
+          user: { id: "fake_user_id", role: "user" },
           expires: tomorrow.toISOString(),
         },
         status: "authenticated",

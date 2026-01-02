@@ -17,8 +17,6 @@ import {
   ArrowLeft, 
   Video, 
   Clock, 
-  Calendar,
-  PlayCircle,
   Download,
   CheckCircle,
   Loader2,
@@ -59,9 +57,10 @@ export default function MeetingDetailPage() {
     { id },
     { 
       enabled: !!session && !isNaN(id),
-      refetchInterval: (data) => {
+      refetchInterval: (query) => {
         // Only refetch if bot is still in progress
-        if (data?.status && ["DONE", "FATAL"].includes(data.status)) {
+        const status = query.state.data?.status;
+        if (status && ["DONE", "FATAL"].includes(status)) {
           return false;
         }
         return 5000; // Refetch every 5 seconds for active bots
@@ -69,15 +68,9 @@ export default function MeetingDetailPage() {
     }
   );
 
-  const { data: recordingData } = api.bots.getSignedRecordingUrl.useQuery(
-    { id },
-    { enabled: !!session && !!bot?.recording }
-  );
-
-  const { data: audioData } = api.bots.getSignedAudioUrl.useQuery(
-    { id },
-    { enabled: !!session && !!bot?.mp3 }
-  );
+  // Use proxy endpoints for media files (works with internal MinIO)
+  const recordingUrl = bot?.recording ? `/api/bots/${id}/recording` : null;
+  const audioUrl = bot?.mp3 ? `/api/bots/${id}/audio` : null;
 
   const { data: transcriptionData } = api.bots.getTranscription.useQuery(
     { id },
@@ -187,11 +180,10 @@ export default function MeetingDetailPage() {
         <CardContent>
           <div className="flex flex-wrap gap-4">
             {/* Recording Download */}
-            {hasRecording && recordingData?.recordingUrl && (
+            {hasRecording && recordingUrl && (
               <a 
-                href={recordingData.recordingUrl} 
-                target="_blank" 
-                rel="noopener noreferrer"
+                href={recordingUrl} 
+                download
               >
                 <Button variant="outline">
                   <Video className="h-4 w-4 mr-2" />
@@ -201,11 +193,10 @@ export default function MeetingDetailPage() {
             )}
 
             {/* Audio Download */}
-            {bot.mp3 && audioData?.audioUrl && (
+            {bot.mp3 && audioUrl && (
               <a 
-                href={audioData.audioUrl} 
-                target="_blank" 
-                rel="noopener noreferrer"
+                href={audioUrl} 
+                download
               >
                 <Button variant="outline">
                   <Download className="h-4 w-4 mr-2" />
@@ -216,12 +207,12 @@ export default function MeetingDetailPage() {
           </div>
 
           {/* Video Player */}
-          {hasRecording && recordingData?.recordingUrl && (
+          {hasRecording && recordingUrl && (
             <div className="mt-4">
               <video
                 controls
                 className="w-full max-h-96 rounded-lg bg-black"
-                src={recordingData.recordingUrl}
+                src={recordingUrl}
               >
                 Your browser does not support the video element.
               </video>

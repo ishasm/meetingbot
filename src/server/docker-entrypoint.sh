@@ -30,7 +30,7 @@ chmod +x /tmp/mc
 
 # Run database migrations
 echo "Running database migrations..."
-drizzle-kit migrate
+npx drizzle-kit migrate
 
 # Start the server
 echo "Starting server..."

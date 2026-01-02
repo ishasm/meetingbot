@@ -30,19 +30,19 @@ export function ActionItemsList({ botId, hasTranscription }: ActionItemsListProp
 
   const generateMutation = api.actionItems.generateActionItems.useMutation({
     onSuccess: () => {
-      utils.actionItems.getActionItems.invalidate({ botId });
+      void utils.actionItems.getActionItems.invalidate({ botId });
     },
   });
 
   const updateMutation = api.actionItems.updateActionItem.useMutation({
     onSuccess: () => {
-      utils.actionItems.getActionItems.invalidate({ botId });
+      void utils.actionItems.getActionItems.invalidate({ botId });
     },
   });
 
   const deleteMutation = api.actionItems.deleteActionItem.useMutation({
     onSuccess: () => {
-      utils.actionItems.getActionItems.invalidate({ botId });
+      void utils.actionItems.getActionItems.invalidate({ botId });
     },
   });
 

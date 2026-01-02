@@ -15,8 +15,6 @@ import { extractCount } from "~/server/utils/database";
 import { generateSignedUrl } from "~/server/utils/s3";
 import { 
   getTranscriptionService, 
-  type TranscriptionProvider,
-  type TranscriptionResult,
   TranscriptionError,
 } from "~/server/services/transcription";
 
@@ -519,26 +517,65 @@ export const botsRouter = createTRPCRouter({
         throw new Error("Bot recording is not complete yet");
       }
 
-      // Prefer MP3 audio (already optimized for transcription)
+      // Try MP3 first, fall back to recording if MP3 fails or is too small
       const audioKey = bot.mp3 ?? bot.recording;
+      const fallbackKey = bot.mp3 ? bot.recording : null;
+      
       if (!audioKey) {
         throw new Error("No recording available for this bot");
       }
 
-      // Get signed URL for the audio
-      const audioUrl = await generateSignedUrl(audioKey);
+      // Get signed URL for the audio and download it
+      // We download first because external services like AssemblyAI can't access internal MinIO URLs
+      const downloadAudio = async (key: string): Promise<Buffer> => {
+        const url = await generateSignedUrl(key);
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Failed to download audio: ${response.status}`);
+        }
+        return Buffer.from(await response.arrayBuffer());
+      };
 
-      // Transcribe using the service
+      let audioBuffer: Buffer;
+      let usedKey = audioKey;
+      try {
+        audioBuffer = await downloadAudio(audioKey);
+        
+        // Check if the buffer is too small (likely corrupted or empty)
+        if (audioBuffer.length < 1000 && fallbackKey) {
+          console.log(`Audio file too small (${audioBuffer.length} bytes), trying fallback...`);
+          audioBuffer = await downloadAudio(fallbackKey);
+          usedKey = fallbackKey;
+        }
+      } catch (downloadError) {
+        // Try fallback if primary fails
+        if (fallbackKey) {
+          console.log(`Primary audio download failed, trying fallback: ${(downloadError as Error).message}`);
+          audioBuffer = await downloadAudio(fallbackKey);
+          usedKey = fallbackKey;
+        } else {
+          throw new Error(`Failed to download audio file: ${(downloadError as Error).message}`);
+        }
+      }
+
+      console.log(`Transcribing audio from ${usedKey}, size: ${audioBuffer.length} bytes`);
+
+      // Transcribe using the service with buffer (works with all providers)
       const service = getTranscriptionService();
       
       try {
+        console.log(`Starting transcription with provider: ${input.provider ?? 'default'}`);
+        const startTime = Date.now();
+        
         // Pass speaker timeframes to improve diarization and map speaker names
-        const result = await service.transcribeFromUrl(audioUrl, {
+        const result = await service.transcribe(audioBuffer, {
           provider: input.provider,
           language: input.language,
           speakerDiarization: input.speakerDiarization,
           speakerTimeframes: bot.speakerTimeframes ?? undefined,
         });
+
+        console.log(`Transcription completed in ${Date.now() - startTime}ms, text length: ${result.text.length}`);
 
         // Save transcription to database if requested
         if (input.saveToDatabase) {
@@ -553,6 +590,7 @@ export const botsRouter = createTRPCRouter({
 
         return result;
       } catch (error) {
+        console.error(`Transcription error:`, error);
         if (error instanceof TranscriptionError) {
           throw new Error(`Transcription failed (${error.provider}): ${error.message}`);
         }
@@ -629,40 +667,43 @@ export const botsRouter = createTRPCRouter({
         throw new Error("No transcription available. Please transcribe the recording first.");
       }
 
-      // Check if OpenAI is available for summarization
-      const openaiKey = process.env.OPENAI_API_KEY;
-      if (!openaiKey) {
-        throw new Error("OpenAI API key not configured for summary generation");
+      // Check if Gemini is available for summarization
+      const geminiKey = process.env.GEMINI_API_KEY;
+      if (!geminiKey) {
+        throw new Error("Gemini API key not configured for summary generation");
       }
 
       const systemPrompt = input.customPrompt ?? 
         "You are a helpful assistant that summarizes meeting transcripts. Provide a concise summary including key discussion points, decisions made, and action items.";
 
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${openaiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { 
-              role: "user", 
-              content: `Please summarize this meeting transcript for "${bot.meetingTitle}":\n\n${bot.transcription}` 
-            },
-          ],
-        }),
-      });
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `${systemPrompt}\n\nPlease summarize this meeting transcript for "${bot.meetingTitle}":\n\n${bot.transcription}`,
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Failed to generate summary: ${errorText}`);
       }
 
-      const data = await response.json();
-      const summary = data.choices?.[0]?.message?.content ?? "Unable to generate summary";
+      const data: unknown = await response.json();
+      const summary = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates?.[0]?.content?.parts?.[0]?.text ?? "Unable to generate summary";
 
       return { summary };
     }),
@@ -800,9 +841,11 @@ function parseMeetingUrl(url: string): { platform: "google" | "zoom" | "teams"; 
 
   // Zoom
   if (url.includes("zoom.us")) {
-    const zoomMatch = url.match(/\/j\/(\d+)/);
-    const pwdMatch = url.match(/pwd=([^&]+)/);
-    if (zoomMatch) {
+    const zoomRegex = /\/j\/(\d+)/;
+    const pwdRegex = /pwd=([^&]+)/;
+    const zoomMatch = zoomRegex.exec(url);
+    const pwdMatch = pwdRegex.exec(url);
+    if (zoomMatch?.[1]) {
       return {
         platform: "zoom",
         meetingId: zoomMatch[1],
@@ -823,15 +866,18 @@ function parseMeetingUrl(url: string): { platform: "google" | "zoom" | "teams"; 
         const context = params.get("context");
         
         if (context) {
-          const contextObj = JSON.parse(decodeURIComponent(context));
+          const contextObj: unknown = JSON.parse(decodeURIComponent(context));
           const decoded = decodeURIComponent(meetingSegment);
-          const meetingId = decoded.replace('19:meeting_', '').split('@')[0];
+          const meetingIdMatch = decoded.replace('19:meeting_', '').split('@');
+          const meetingId = meetingIdMatch[0] ?? "";
+          const organizerId = (contextObj as { Oid?: string }).Oid ?? "";
+          const tenantId = (contextObj as { Tid?: string }).Tid ?? "";
           
           return {
             platform: "teams",
-            meetingId: meetingId ?? "",
-            organizerId: contextObj.Oid ?? "",
-            tenantId: contextObj.Tid ?? "",
+            meetingId,
+            organizerId,
+            tenantId,
           };
         }
       }

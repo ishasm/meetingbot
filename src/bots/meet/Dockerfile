@@ -50,14 +50,14 @@ WORKDIR /app
 # Change ownership of all files after installation
 RUN useradd -ms /bin/bash meetbot && chown -R meetbot:meetbot /app
 
-# install xvfb, pulseaudio, and xephyr in a single step
+# install xvfb, pulseaudio, xephyr, and ffmpeg in a single step
 RUN apt-get update && apt-get install -y --no-install-recommends \
 xvfb \
 pulseaudio \
 pulseaudio-utils \
 xserver-xephyr \
 x11-xserver-utils \
-pulseaudio \
+ffmpeg \
 && rm -rf /var/lib/apt/lists/*
 
 #Install pnpm globally

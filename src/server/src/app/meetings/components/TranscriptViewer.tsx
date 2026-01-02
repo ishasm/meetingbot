@@ -20,7 +20,7 @@ export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps)
 
   const transcribeMutation = api.bots.transcribeBot.useMutation({
     onSuccess: () => {
-      utils.bots.getTranscription.invalidate({ id: botId });
+      void utils.bots.getTranscription.invalidate({ id: botId });
     },
   });
 

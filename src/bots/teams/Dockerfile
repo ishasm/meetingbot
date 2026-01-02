@@ -12,6 +12,9 @@ ENV \
 # Stay as root for all installation steps
 USER root
 
+# Install ffmpeg for audio extraction
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
 # Install pnpm
 RUN npm install -g pnpm
 

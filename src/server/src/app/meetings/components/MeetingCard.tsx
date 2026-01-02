@@ -55,7 +55,7 @@ export function MeetingCard({ meeting }: MeetingCardProps) {
           <div className="flex items-center gap-2">
             {meeting.platform && platformLogos[meeting.platform] && (
               <Image
-                src={platformLogos[meeting.platform]}
+                src={platformLogos[meeting.platform]!}
                 alt={meeting.platform}
                 width={20}
                 height={20}

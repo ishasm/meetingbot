@@ -26,7 +26,7 @@ export * from "./types";
  */
 function getDefaultProvider(): TranscriptionProvider {
   // Check environment variable for explicit default
-  const envProvider = process.env.TRANSCRIPTION_PROVIDER?.toLowerCase();
+  const envProvider = process.env.TRANSCRIPTION_PROVIDER?.toLowerCase() as TranscriptionProvider | undefined;
   if (envProvider === "openai" || envProvider === "assemblyai" || envProvider === "whisper-self-hosted") {
     return envProvider;
   }
@@ -57,12 +57,6 @@ function createProvider(provider: TranscriptionProvider): ITranscriptionProvider
       return new AssemblyAIProvider();
     case "whisper-self-hosted":
       return new WhisperSelfHostedProvider();
-    default:
-      throw new TranscriptionError(
-        `Unknown transcription provider: ${provider}`,
-        provider,
-        "UNKNOWN_PROVIDER"
-      );
   }
 }
 
@@ -70,10 +64,10 @@ function createProvider(provider: TranscriptionProvider): ITranscriptionProvider
  * Transcription service class
  */
 export class TranscriptionService {
-  private providers: Map<TranscriptionProvider, ITranscriptionProvider> = new Map();
+  private providers: Map<TranscriptionProvider, ITranscriptionProvider>;
 
   constructor() {
-    // Initialize providers lazily
+    this.providers = new Map<TranscriptionProvider, ITranscriptionProvider>();
   }
 
   private getProvider(name: TranscriptionProvider): ITranscriptionProvider {
@@ -197,9 +191,7 @@ let transcriptionServiceInstance: TranscriptionService | null = null;
  * Get the shared transcription service instance
  */
 export function getTranscriptionService(): TranscriptionService {
-  if (!transcriptionServiceInstance) {
-    transcriptionServiceInstance = new TranscriptionService();
-  }
+  transcriptionServiceInstance ??= new TranscriptionService();
   return transcriptionServiceInstance;
 }
 

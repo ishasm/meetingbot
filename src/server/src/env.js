@@ -88,6 +88,8 @@ export const env = createEnv({
     ASSEMBLYAI_API_KEY: z.string().optional(),
     WHISPER_API_URL: z.string().optional(),
     WHISPER_API_KEY: z.string().optional(),
+    // Gemini API (for action items and summaries)
+    GEMINI_API_KEY: z.string().optional(),
   },
 
   /**
@@ -134,6 +136,8 @@ export const env = createEnv({
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY,
     WHISPER_API_URL: process.env.WHISPER_API_URL,
     WHISPER_API_KEY: process.env.WHISPER_API_KEY,
+    // Gemini API (for action items and summaries)
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   },
   /**
    * Run `build` or `dev` with `SKIP_ENV_VALIDATION` to skip env validation. This is especially

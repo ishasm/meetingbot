@@ -151,7 +151,7 @@ export const usersRouter = createTRPCRouter({
         .limit(1);
 
       const user = result[0];
-      if (!user || !user.password) {
+      if (!user?.password) {
         throw new Error("User not found or no password set");
       }
 

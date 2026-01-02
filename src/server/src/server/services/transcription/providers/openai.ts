@@ -10,7 +10,7 @@ import {
 } from "../types";
 
 export class OpenAIProvider implements ITranscriptionProvider {
-  readonly name = "openai" as const;
+  readonly name = "openai";
   private apiKey: string | undefined;
 
   constructor(apiKey?: string) {
@@ -72,28 +72,36 @@ export class OpenAIProvider implements ITranscriptionProvider {
         );
       }
 
-      const data = await response.json();
+      const data: unknown = await response.json();
       const processingTimeMs = Date.now() - startTime;
 
+      const result = data as {
+        text: string;
+        language?: string;
+        duration?: number;
+        segments?: Array<{ start: number; end: number; text: string; avg_logprob?: number }>;
+        words?: Array<{ word: string; start: number; end: number }>;
+      };
+
       // Parse segments from verbose response
-      const segments: TranscriptionSegment[] = data.segments?.map((seg: any) => ({
+      const segments: TranscriptionSegment[] = result.segments?.map((seg) => ({
         start: seg.start,
         end: seg.end,
         text: seg.text,
-        confidence: seg.avg_logprob ? Math.exp(seg.avg_logprob) : undefined,
+        confidence: seg.avg_logprob !== undefined ? Math.exp(seg.avg_logprob) : undefined,
       })) ?? [];
 
       // Parse words if available
-      const words = data.words?.map((w: any) => ({
+      const words = result.words?.map((w) => ({
         word: w.word,
         start: w.start,
         end: w.end,
       }));
 
       return {
-        text: data.text,
-        language: data.language,
-        duration: data.duration,
+        text: result.text,
+        language: result.language,
+        duration: result.duration,
         segments,
         words,
         provider: "openai",

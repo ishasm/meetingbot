@@ -40,9 +40,7 @@ function mapSpeakersToNames(
     if (!segment.speaker) continue;
 
     const speakerLabel = segment.speaker;
-    if (!speakerVotes[speakerLabel]) {
-      speakerVotes[speakerLabel] = {};
-    }
+    speakerVotes[speakerLabel] ??= {};
 
     // Find overlapping speaker timeframes
     for (const tf of speakerTimeframes) {
@@ -76,8 +74,8 @@ function mapSpeakersToNames(
       .filter(([name]) => !usedNames.has(name))
       .sort((a, b) => b[1] - a[1]);
 
-    if (sortedNames.length > 0) {
-      const bestName = sortedNames[0]![0];
+    if (sortedNames.length > 0 && sortedNames[0]) {
+      const bestName = sortedNames[0][0];
       speakerMap[label] = bestName;
       usedNames.add(bestName);
     }
@@ -106,7 +104,7 @@ function getUniqueSpeakers(timeframes: SpeakerTimeframe[]): string[] {
 }
 
 export class AssemblyAIProvider implements ITranscriptionProvider {
-  readonly name = "assemblyai" as const;
+  readonly name = "assemblyai";
   private apiKey: string | undefined;
 
   constructor(apiKey?: string) {
@@ -133,13 +131,19 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
 
     try {
       // Step 1: Upload the audio file
+      console.log(`AssemblyAI: Uploading audio (${audioBuffer.length} bytes)...`);
       const uploadUrl = await this.uploadAudio(audioBuffer);
+      console.log(`AssemblyAI: Upload complete, URL: ${uploadUrl.substring(0, 50)}...`);
 
       // Step 2: Start transcription
+      console.log(`AssemblyAI: Starting transcription...`);
       const transcriptId = await this.startTranscription(uploadUrl, options);
+      console.log(`AssemblyAI: Transcription started, ID: ${transcriptId}`);
 
       // Step 3: Poll for completion
+      console.log(`AssemblyAI: Polling for completion...`);
       const result = await this.pollForCompletion(transcriptId, options.speakerTimeframes);
+      console.log(`AssemblyAI: Transcription complete, text length: ${result.text.length}`);
 
       const processingTimeMs = Date.now() - startTime;
 
@@ -149,6 +153,7 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
         processingTimeMs,
       };
     } catch (error) {
+      console.error(`AssemblyAI error:`, error);
       if (error instanceof TranscriptionError) {
         throw error;
       }
@@ -203,10 +208,15 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
   }
 
   private async uploadAudio(audioBuffer: Buffer): Promise<string> {
+    const apiKey = this.apiKey;
+    if (!apiKey) {
+      throw new TranscriptionError("AssemblyAI API key not configured", "assemblyai", "NO_API_KEY");
+    }
+
     const response = await fetch(`${ASSEMBLYAI_API_URL}/upload`, {
       method: "POST",
       headers: {
-        Authorization: this.apiKey!,
+        Authorization: apiKey,
         "Content-Type": "application/octet-stream",
       },
       body: audioBuffer,
@@ -221,15 +231,15 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
       );
     }
 
-    const data = await response.json();
-    return data.upload_url;
+    const data: unknown = await response.json();
+    return (data as { upload_url: string }).upload_url;
   }
 
   private async startTranscription(
     audioUrl: string,
     options: Omit<TranscriptionOptions, "provider">
   ): Promise<string> {
-    const requestBody: Record<string, any> = {
+    const requestBody: Record<string, unknown> = {
       audio_url: audioUrl,
     };
 
@@ -241,7 +251,7 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     // Speaker diarization - enable by default if we have speaker timeframes
     // or if explicitly requested
     const enableDiarization = options.speakerDiarization !== false && 
-      (options.speakerDiarization || options.speakerTimeframes?.length);
+      (options.speakerDiarization ?? (options.speakerTimeframes?.length ?? 0) > 0);
     
     if (enableDiarization) {
       requestBody.speaker_labels = true;
@@ -252,8 +262,9 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
       
       if (speakersExpected && speakersExpected > 0) {
         // AssemblyAI accepts speakers_expected as a hint
-        requestBody.speakers_expected = Math.min(speakersExpected, 10); // Max 10 speakers
-        console.log(`AssemblyAI: Setting speakers_expected to ${requestBody.speakers_expected}`);
+        const expectedCount = Math.min(speakersExpected, 10); // Max 10 speakers
+        requestBody.speakers_expected = expectedCount;
+        console.log(`AssemblyAI: Setting speakers_expected to ${expectedCount}`);
       }
     }
 
@@ -265,15 +276,20 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     // Add speaker names as custom vocabulary for better recognition
     if (options.speakerTimeframes?.length) {
       const speakerNames = getUniqueSpeakers(options.speakerTimeframes);
-      const existingBoost = requestBody.word_boost ?? [];
+      const existingBoost = (requestBody.word_boost as string[] | undefined) ?? [];
       requestBody.word_boost = [...new Set([...existingBoost, ...speakerNames])];
       console.log(`AssemblyAI: Boosting speaker names: ${speakerNames.join(", ")}`);
+    }
+
+    const apiKey = this.apiKey;
+    if (!apiKey) {
+      throw new TranscriptionError("AssemblyAI API key not configured", "assemblyai", "NO_API_KEY");
     }
 
     const response = await fetch(`${ASSEMBLYAI_API_URL}/transcript`, {
       method: "POST",
       headers: {
-        Authorization: this.apiKey!,
+        Authorization: apiKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(requestBody),
@@ -288,8 +304,8 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
       );
     }
 
-    const data = await response.json();
-    return data.id;
+    const data: unknown = await response.json();
+    return (data as { id: string }).id;
   }
 
   private async pollForCompletion(
@@ -299,12 +315,17 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     const maxAttempts = 180; // 15 minutes max (5 second intervals)
     let attempts = 0;
 
+    const apiKey = this.apiKey;
+    if (!apiKey) {
+      throw new TranscriptionError("AssemblyAI API key not configured", "assemblyai", "NO_API_KEY");
+    }
+
     while (attempts < maxAttempts) {
       const response = await fetch(
         `${ASSEMBLYAI_API_URL}/transcript/${transcriptId}`,
         {
           headers: {
-            Authorization: this.apiKey!,
+            Authorization: apiKey,
           },
         }
       );
@@ -317,15 +338,16 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
         );
       }
 
-      const data = await response.json();
+      const data: unknown = await response.json();
+      const statusData = data as { status: string; error?: string };
 
-      if (data.status === "completed") {
+      if (statusData.status === "completed") {
         return this.parseTranscriptionResult(data, speakerTimeframes);
       }
 
-      if (data.status === "error") {
+      if (statusData.status === "error") {
         throw new TranscriptionError(
-          `Transcription failed: ${data.error}`,
+          `Transcription failed: ${statusData.error ?? "Unknown error"}`,
           "assemblyai",
           "TRANSCRIPTION_ERROR"
         );
@@ -333,7 +355,7 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
 
       // Log progress
       if (attempts % 6 === 0) { // Every 30 seconds
-        console.log(`AssemblyAI: Transcription status: ${data.status} (attempt ${attempts + 1})`);
+        console.log(`AssemblyAI: Transcription status: ${statusData.status} (attempt ${attempts + 1})`);
       }
 
       // Wait 5 seconds before next poll
@@ -349,11 +371,19 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
   }
 
   private parseTranscriptionResult(
-    data: any,
+    data: unknown,
     speakerTimeframes?: SpeakerTimeframe[]
   ): Omit<TranscriptionResult, "provider" | "processingTimeMs"> {
+    const result = data as {
+      text: string;
+      words?: Array<{ text: string; start: number; end: number; confidence: number; speaker?: string }>;
+      utterances?: Array<{ text: string; start: number; end: number; speaker?: string; confidence: number }>;
+      language_code?: string;
+      audio_duration?: number;
+    };
+
     // Parse words with speaker info
-    let words: TranscriptionWord[] = data.words?.map((w: any) => ({
+    let words: TranscriptionWord[] = result.words?.map((w) => ({
       word: w.text,
       start: w.start / 1000, // Convert ms to seconds
       end: w.end / 1000,
@@ -364,8 +394,8 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     // Create segments from utterances if available (speaker-based)
     let segments: TranscriptionSegment[] = [];
 
-    if (data.utterances?.length) {
-      segments = data.utterances.map((u: any) => ({
+    if (result.utterances?.length) {
+      segments = result.utterances.map((u) => ({
         start: u.start / 1000,
         end: u.end / 1000,
         text: u.text,
@@ -388,7 +418,7 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     }
 
     // Rebuild text with speaker names if we have segments
-    let text = data.text;
+    let text = result.text;
     if (segments.length > 0 && segments[0]?.speaker) {
       text = segments
         .map(seg => `${seg.speaker}: ${seg.text}`)
@@ -397,8 +427,8 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
 
     return {
       text,
-      language: data.language_code,
-      duration: data.audio_duration,
+      language: result.language_code,
+      duration: result.audio_duration,
       segments,
       words: words.length > 0 ? words : undefined,
     };

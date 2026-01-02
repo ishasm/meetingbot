@@ -24,7 +24,7 @@ export function ActionItemForm({ botId, onSuccess, onCancel }: ActionItemFormPro
       setContent("");
       setAssignee("");
       setPriority("medium");
-      utils.actionItems.getActionItems.invalidate({ botId });
+      void utils.actionItems.getActionItems.invalidate({ botId });
       onSuccess?.();
     },
   });

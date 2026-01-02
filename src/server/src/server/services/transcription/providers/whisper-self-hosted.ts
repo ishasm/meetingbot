@@ -16,7 +16,7 @@ import {
 } from "../types";
 
 export class WhisperSelfHostedProvider implements ITranscriptionProvider {
-  readonly name = "whisper-self-hosted" as const;
+  readonly name = "whisper-self-hosted";
   private baseUrl: string;
   private apiKey: string | undefined;
 
@@ -92,7 +92,7 @@ export class WhisperSelfHostedProvider implements ITranscriptionProvider {
 
     const headers: Record<string, string> = {};
     if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
+      headers.Authorization = `Bearer ${this.apiKey}`;
     }
 
     // Try /v1/audio/transcriptions (OpenAI format)
@@ -120,26 +120,34 @@ export class WhisperSelfHostedProvider implements ITranscriptionProvider {
       );
     }
 
-    const data = await response.json();
+    const data: unknown = await response.json();
+
+    const result = data as {
+      text?: string;
+      language?: string;
+      duration?: number;
+      segments?: Array<{ start: number; end: number; text: string; avg_logprob?: number }>;
+      words?: Array<{ word: string; start: number; end: number }>;
+    };
 
     // Parse response (OpenAI format)
-    const segments: TranscriptionSegment[] = data.segments?.map((seg: any) => ({
+    const segments: TranscriptionSegment[] = result.segments?.map((seg) => ({
       start: seg.start,
       end: seg.end,
       text: seg.text,
-      confidence: seg.avg_logprob ? Math.exp(seg.avg_logprob) : undefined,
+      confidence: seg.avg_logprob !== undefined ? Math.exp(seg.avg_logprob) : undefined,
     })) ?? [];
 
-    const words = data.words?.map((w: any) => ({
+    const words = result.words?.map((w) => ({
       word: w.word,
       start: w.start,
       end: w.end,
     }));
 
     return {
-      text: data.text,
-      language: data.language,
-      duration: data.duration,
+      text: result.text ?? "",
+      language: result.language,
+      duration: result.duration,
       segments,
       words,
       provider: "whisper-self-hosted",
@@ -168,7 +176,7 @@ export class WhisperSelfHostedProvider implements ITranscriptionProvider {
 
     const headers: Record<string, string> = {};
     if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
+      headers.Authorization = `Bearer ${this.apiKey}`;
     }
 
     for (const endpoint of endpoints) {
@@ -180,16 +188,24 @@ export class WhisperSelfHostedProvider implements ITranscriptionProvider {
         });
 
         if (response.ok) {
-          const data = await response.json();
+          const data: unknown = await response.json();
+          const result = data as {
+            text?: string;
+            transcription?: string;
+            result?: string;
+            language?: string;
+            duration?: number;
+            segments?: TranscriptionSegment[];
+          };
           
           // Handle various response formats
-          const text = data.text ?? data.transcription ?? data.result ?? "";
+          const text = result.text ?? result.transcription ?? result.result ?? "";
           
           return {
             text,
-            language: data.language,
-            duration: data.duration,
-            segments: data.segments,
+            language: result.language,
+            duration: result.duration,
+            segments: result.segments,
             provider: "whisper-self-hosted",
           };
         }

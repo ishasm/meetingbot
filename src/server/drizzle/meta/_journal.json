@@ -29,6 +29,13 @@
       "when": 1735689600000,
       "tag": "0003_add_user_roles_and_action_items",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1735776000000,
+      "tag": "0004_add_speaker_timeframes",
+      "breakpoints": true
     }
   ]
 }

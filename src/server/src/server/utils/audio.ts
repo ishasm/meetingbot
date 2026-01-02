@@ -1,5 +1,6 @@
-import { Readable, PassThrough } from "stream";
-import { spawn, type ChildProcess } from "child_process";
+import type { Readable } from "stream";
+import { PassThrough } from "stream";
+import { spawn } from "child_process";
 
 /**
  * Options for audio extraction
@@ -274,7 +275,7 @@ export async function extractAudioFromUrlStreaming(
 export async function streamToBuffer(stream: Readable): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    stream.on("data", (chunk) => chunks.push(chunk));
+    stream.on("data", (chunk: Buffer) => chunks.push(chunk));
     stream.on("end", () => resolve(Buffer.concat(chunks)));
     stream.on("error", reject);
   });

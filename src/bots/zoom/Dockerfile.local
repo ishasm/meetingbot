@@ -46,7 +46,7 @@ WORKDIR /app
 # Create user and set ownership
 RUN useradd -ms /bin/bash meetbot && chown -R meetbot:meetbot /app
 
-# Install runtime dependencies
+# Install runtime dependencies (including ffmpeg for audio extraction)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
     pulseaudio \
@@ -54,6 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xserver-xephyr \
     x11-xserver-utils \
     netcat-openbsd \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm globally

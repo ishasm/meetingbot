@@ -44,60 +44,76 @@ export const actionItemsRouter = createTRPCRouter({
         throw new Error("No transcription available. Please transcribe the recording first.");
       }
 
-      // Check if OpenAI is available
-      const openaiKey = process.env.OPENAI_API_KEY;
-      if (!openaiKey) {
-        throw new Error("OpenAI API key not configured for action item generation");
+      // Check if Gemini is available
+      const geminiKey = process.env.GEMINI_API_KEY;
+      if (!geminiKey) {
+        throw new Error("Gemini API key not configured for action item generation");
       }
 
-      // Generate action items using AI
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${openaiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o",
-          messages: [
-            {
-              role: "system",
-              content: `You are an assistant that extracts action items from meeting transcripts. 
-              For each action item, provide:
-              - content: A clear description of the action
-              - assignee: The person responsible (if mentioned), or null
-              - priority: "low", "medium", or "high" based on urgency
-              
-              Respond with a JSON array of action items. Example:
-              [
-                {"content": "Schedule follow-up meeting", "assignee": "John", "priority": "high"},
-                {"content": "Review the proposal document", "assignee": null, "priority": "medium"}
-              ]
-              
-              Only include clear action items that were explicitly discussed. Do not make up items.`,
+      // Generate action items using Gemini AI
+      const systemPrompt = `You are an assistant that extracts action items from meeting transcripts. 
+For each action item, provide:
+- content: A clear description of the action
+- assignee: The person responsible (if mentioned), or null
+- priority: "low", "medium", or "high" based on urgency
+
+Respond with a JSON object containing an "actionItems" array. Example:
+{"actionItems": [
+  {"content": "Schedule follow-up meeting", "assignee": "John", "priority": "high"},
+  {"content": "Review the proposal document", "assignee": null, "priority": "medium"}
+]}
+
+Only include clear action items that were explicitly discussed. Do not make up items.`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `${systemPrompt}\n\nExtract action items from this meeting transcript for "${bot.meetingTitle}":\n\n${bot.transcription}`,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: "application/json",
             },
-            {
-              role: "user",
-              content: `Extract action items from this meeting transcript for "${bot.meetingTitle}":\n\n${bot.transcription}`,
-            },
-          ],
-          response_format: { type: "json_object" },
-        }),
-      });
+          }),
+        }
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Failed to generate action items: ${errorText}`);
       }
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content ?? "{}";
+      const data: unknown = await response.json();
+      const content = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
       
       let parsedItems: Array<{ content: string; assignee?: string | null; priority?: string }>;
       try {
-        const parsed = JSON.parse(content);
-        parsedItems = parsed.actionItems || parsed.action_items || parsed.items || [];
-        if (!Array.isArray(parsedItems)) {
+        const parsed: unknown = JSON.parse(content);
+        const items = (parsed as { actionItems?: unknown; action_items?: unknown; items?: unknown }).actionItems ?? 
+                     (parsed as { actionItems?: unknown; action_items?: unknown; items?: unknown }).action_items ?? 
+                     (parsed as { actionItems?: unknown; action_items?: unknown; items?: unknown }).items ?? 
+                     [];
+        if (Array.isArray(items)) {
+          parsedItems = items.map((item: unknown) => {
+            const i = item as { content?: string; assignee?: string | null; priority?: string };
+            return {
+              content: i.content ?? "",
+              assignee: i.assignee,
+              priority: i.priority,
+            };
+          }).filter(item => item.content);
+        } else {
           parsedItems = [];
         }
       } catch {
@@ -302,7 +318,7 @@ export const actionItemsRouter = createTRPCRouter({
       actionItems: z.array(selectActionItemSchema),
     }))
     .query(async ({ input, ctx }) => {
-      let query = ctx.db
+      const query = ctx.db
         .select()
         .from(actionItems)
         .where(eq(actionItems.userId, ctx.session.user.id))
