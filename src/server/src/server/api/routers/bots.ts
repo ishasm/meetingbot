@@ -21,18 +21,21 @@ import {
 // Transcription provider enum for API validation
 const transcriptionProviderSchema = z.enum(["openai", "assemblyai", "whisper-self-hosted"]);
 
+// Transcription segment schema (reusable)
+const transcriptionSegmentApiSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+  text: z.string(),
+  speaker: z.string().optional(),
+  confidence: z.number().optional(),
+});
+
 // Transcription result schema for API output
 const transcriptionResultSchema = z.object({
   text: z.string(),
   language: z.string().optional(),
   duration: z.number().optional(),
-  segments: z.array(z.object({
-    start: z.number(),
-    end: z.number(),
-    text: z.string(),
-    speaker: z.string().optional(),
-    confidence: z.number().optional(),
-  })).optional(),
+  segments: z.array(transcriptionSegmentApiSchema).optional(),
   words: z.array(z.object({
     word: z.string(),
     start: z.number(),
@@ -42,6 +45,8 @@ const transcriptionResultSchema = z.object({
   })).optional(),
   provider: transcriptionProviderSchema,
   processingTimeMs: z.number().optional(),
+  srt: z.string().optional(),
+  speakerMap: z.record(z.string(), z.string()).optional(),
 });
 
 export const botsRouter = createTRPCRouter({
@@ -576,6 +581,12 @@ export const botsRouter = createTRPCRouter({
         });
 
         console.log(`Transcription completed in ${Date.now() - startTime}ms, text length: ${result.text.length}`);
+        if (result.srt) {
+          console.log(`SRT generated, length: ${result.srt.length} chars`);
+        }
+        if (result.speakerMap) {
+          console.log(`Speaker mapping used:`, result.speakerMap);
+        }
 
         // Save transcription to database if requested
         if (input.saveToDatabase) {
@@ -583,6 +594,8 @@ export const botsRouter = createTRPCRouter({
             .update(bots)
             .set({ 
               transcription: result.text,
+              transcriptionSrt: result.srt ?? null,
+              transcriptionSegments: result.segments ?? null,
               transcriptionProvider: result.provider,
             })
             .where(eq(bots.id, input.id));
@@ -609,12 +622,16 @@ export const botsRouter = createTRPCRouter({
     .input(z.object({ id: z.number() }))
     .output(z.object({
       transcription: z.string().nullable(),
+      transcriptionSrt: z.string().nullable(),
+      transcriptionSegments: z.array(transcriptionSegmentApiSchema).optional(),
       transcriptionProvider: z.string().nullable(),
     }))
     .query(async ({ input, ctx }) => {
       const result = await ctx.db
         .select({ 
           transcription: bots.transcription,
+          transcriptionSrt: bots.transcriptionSrt,
+          transcriptionSegments: bots.transcriptionSegments,
           transcriptionProvider: bots.transcriptionProvider,
           userId: bots.userId,
         })
@@ -628,7 +645,50 @@ export const botsRouter = createTRPCRouter({
 
       return {
         transcription: bot.transcription,
+        transcriptionSrt: bot.transcriptionSrt,
+        transcriptionSegments: bot.transcriptionSegments ?? undefined,
         transcriptionProvider: bot.transcriptionProvider,
+      };
+    }),
+
+  getSrt: protectedProcedure
+    .meta({
+      openapi: {
+        method: "GET",
+        path: "/bots/{id}/srt",
+        description: "Get the SRT subtitle file for a bot's transcription. Returns the SRT content with proper speaker names.",
+      },
+    })
+    .input(z.object({ id: z.number() }))
+    .output(z.object({
+      srt: z.string().nullable(),
+      filename: z.string(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const result = await ctx.db
+        .select({ 
+          transcriptionSrt: bots.transcriptionSrt,
+          meetingTitle: bots.meetingTitle,
+          userId: bots.userId,
+        })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      const bot = result[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      // Generate a safe filename from the meeting title
+      const safeTitle = bot.meetingTitle
+        .replace(/[^a-zA-Z0-9\s-]/g, '')
+        .replace(/\s+/g, '_')
+        .substring(0, 50);
+      const filename = `${safeTitle}_${input.id}.srt`;
+
+      return {
+        srt: bot.transcriptionSrt,
+        filename,
       };
     }),
 

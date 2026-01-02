@@ -15,13 +15,44 @@ import {
   type TranscriptionWord,
   type SpeakerTimeframe,
   TranscriptionError,
+  generateSrt,
 } from "../types";
 
 const ASSEMBLYAI_API_URL = "https://api.assemblyai.com/v2";
 
 /**
+ * Normalizes speaker timeframes to ensure they're in seconds.
+ * Bot recordings store timeframes in milliseconds, but AssemblyAI segments are in seconds.
+ */
+function normalizeTimeframesToSeconds(timeframes: SpeakerTimeframe[]): SpeakerTimeframe[] {
+  if (!timeframes.length) return timeframes;
+  
+  // Heuristic: if start times are > 100000, they're likely in milliseconds
+  // (100000 seconds = ~27 hours, which is unlikely for a meeting)
+  const firstStart = timeframes[0]?.start ?? 0;
+  const needsConversion = firstStart > 100000;
+  
+  if (needsConversion) {
+    console.log(`AssemblyAI: Converting speaker timeframes from ms to seconds`);
+    return timeframes.map(tf => ({
+      speakerName: tf.speakerName,
+      start: tf.start / 1000,
+      end: tf.end / 1000,
+    }));
+  }
+  
+  return timeframes;
+}
+
+/**
  * Maps AssemblyAI speaker labels (A, B, C) to actual participant names
- * using the speaker_timeframes data from meeting recordings
+ * using the speaker_timeframes data from meeting recordings.
+ * 
+ * Algorithm (similar to what tl;dv and other tools use):
+ * 1. For each transcription segment, find overlapping speaker timeframes
+ * 2. Vote for speaker names based on overlap duration
+ * 3. Assign labels to names with highest confidence (most overlap)
+ * 4. Use Hungarian algorithm-style assignment to avoid conflicts
  */
 function mapSpeakersToNames(
   segments: TranscriptionSegment[],
@@ -29,8 +60,18 @@ function mapSpeakersToNames(
   speakerTimeframes: SpeakerTimeframe[]
 ): { segments: TranscriptionSegment[]; words?: TranscriptionWord[]; speakerMap: Record<string, string> } {
   if (!speakerTimeframes.length) {
+    console.log(`AssemblyAI: No speaker timeframes provided, skipping name mapping`);
     return { segments, words, speakerMap: {} };
   }
+
+  // Normalize timeframes to seconds (bot stores in ms, AssemblyAI uses seconds)
+  const normalizedTimeframes = normalizeTimeframesToSeconds(speakerTimeframes);
+  
+  console.log(`AssemblyAI: Mapping speakers with ${normalizedTimeframes.length} timeframes`);
+  console.log(`AssemblyAI: First few timeframes:`, normalizedTimeframes.slice(0, 3));
+  console.log(`AssemblyAI: First few segments:`, segments.slice(0, 3).map(s => ({ 
+    start: s.start, end: s.end, speaker: s.speaker, text: s.text.substring(0, 50) 
+  })));
 
   // Build a map of AssemblyAI speaker labels to actual names
   // Strategy: For each segment, find the speaker_timeframe that overlaps most
@@ -43,7 +84,7 @@ function mapSpeakersToNames(
     speakerVotes[speakerLabel] ??= {};
 
     // Find overlapping speaker timeframes
-    for (const tf of speakerTimeframes) {
+    for (const tf of normalizedTimeframes) {
       const overlapStart = Math.max(segment.start, tf.start);
       const overlapEnd = Math.min(segment.end, tf.end);
       const overlap = Math.max(0, overlapEnd - overlapStart);
@@ -54,6 +95,8 @@ function mapSpeakersToNames(
       }
     }
   }
+
+  console.log(`AssemblyAI: Speaker votes:`, speakerVotes);
 
   // Assign each speaker label to the name with the most overlap
   const speakerMap: Record<string, string> = {};
@@ -80,6 +123,8 @@ function mapSpeakersToNames(
       usedNames.add(bestName);
     }
   }
+
+  console.log(`AssemblyAI: Final speaker mapping:`, speakerMap);
 
   // Apply the mapping to segments
   const mappedSegments = segments.map(seg => ({
@@ -405,12 +450,14 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     }
 
     // Map speaker labels to actual names if we have speaker timeframes
+    let speakerMap: Record<string, string> = {};
     if (speakerTimeframes?.length && segments.length) {
       console.log(`AssemblyAI: Mapping ${segments.length} segments to ${getUniqueSpeakers(speakerTimeframes).length} known speakers`);
       
       const mapped = mapSpeakersToNames(segments, words, speakerTimeframes);
       segments = mapped.segments;
       words = mapped.words ?? words;
+      speakerMap = mapped.speakerMap;
 
       if (Object.keys(mapped.speakerMap).length > 0) {
         console.log(`AssemblyAI: Speaker mapping:`, mapped.speakerMap);
@@ -425,12 +472,17 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
         .join("\n\n");
     }
 
+    // Generate SRT format with speaker names (like tl;dv and other tools)
+    const srt = segments.length > 0 ? generateSrt(segments) : undefined;
+
     return {
       text,
       language: result.language_code,
       duration: result.audio_duration,
       segments,
       words: words.length > 0 ? words : undefined,
+      srt,
+      speakerMap: Object.keys(speakerMap).length > 0 ? speakerMap : undefined,
     };
   }
 }

@@ -189,6 +189,16 @@ export const speakerTimeframeSchema = z.object({
 });
 export type SpeakerTimeframe = z.infer<typeof speakerTimeframeSchema>;
 
+/** Transcription segment data stored in JSON format */
+export const transcriptionSegmentSchema = z.object({
+  start: z.number(), // Start time in seconds
+  end: z.number(), // End time in seconds
+  text: z.string(),
+  speaker: z.string().optional(), // Mapped speaker name
+  confidence: z.number().optional(),
+});
+export type TranscriptionSegmentData = z.infer<typeof transcriptionSegmentSchema>;
+
 /** BOT CONFIG */
 const automaticLeaveSchema = z.object({
   waitingRoomTimeout: z.number(), // the milliseconds before the bot leaves the meeting if it is in the waiting room
@@ -274,6 +284,8 @@ export const bots = pgTable("bots", {
   recording: varchar("recording", { length: 255 }),
   mp3: varchar("mp3", { length: 255 }),
   transcription: text("transcription"),
+  transcriptionSrt: text("transcription_srt"), // SRT format with timestamps and speaker names
+  transcriptionSegments: json("transcription_segments").$type<TranscriptionSegmentData[]>(), // Raw segments for flexible rendering
   transcriptionProvider: varchar("transcription_provider", { length: 50 }),
   speakerTimeframes: json('speaker_timeframes')
     .$type<SpeakerTimeframe[]>()
@@ -315,6 +327,7 @@ export const selectBotSchema = createSelectSchema(bots, {
   meetingInfo: meetingInfoSchema,
   automaticLeave: automaticLeaveSchema,
   speakerTimeframes: z.array(speakerTimeframeSchema),
+  transcriptionSegments: z.array(transcriptionSegmentSchema).nullable().optional(),
 });
 export type SelectBotType = z.infer<typeof selectBotSchema>;
 

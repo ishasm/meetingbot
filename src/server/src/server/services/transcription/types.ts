@@ -94,6 +94,38 @@ export interface TranscriptionResult {
   provider: TranscriptionProvider;
   /** Processing time in milliseconds */
   processingTimeMs?: number;
+  /** SRT formatted transcription with speaker names */
+  srt?: string;
+  /** Speaker label to real name mapping used */
+  speakerMap?: Record<string, string>;
+}
+
+/**
+ * Formats seconds to SRT timestamp format: HH:MM:SS,mmm
+ */
+export function formatSrtTimestamp(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.round((seconds % 1) * 1000);
+  
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+}
+
+/**
+ * Generates SRT formatted transcription from segments.
+ * This format is compatible with video players and includes speaker names.
+ */
+export function generateSrt(segments: TranscriptionSegment[]): string {
+  if (!segments.length) return '';
+  
+  return segments.map((segment, index) => {
+    const startTime = formatSrtTimestamp(segment.start);
+    const endTime = formatSrtTimestamp(segment.end);
+    const speakerPrefix = segment.speaker ? `${segment.speaker}: ` : '';
+    
+    return `${index + 1}\n${startTime} --> ${endTime}\n${speakerPrefix}${segment.text}\n`;
+  }).join('\n');
 }
 
 /**
