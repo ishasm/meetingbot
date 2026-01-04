@@ -326,7 +326,7 @@ export type InsertBotType = z.infer<typeof insertBotSchema>;
 export const selectBotSchema = createSelectSchema(bots, {
   meetingInfo: meetingInfoSchema,
   automaticLeave: automaticLeaveSchema,
-  speakerTimeframes: z.array(speakerTimeframeSchema),
+  speakerTimeframes: z.array(speakerTimeframeSchema).nullable().default([]),
   transcriptionSegments: z.array(transcriptionSegmentSchema).nullable().optional(),
 });
 export type SelectBotType = z.infer<typeof selectBotSchema>;

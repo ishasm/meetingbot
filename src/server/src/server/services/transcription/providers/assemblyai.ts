@@ -311,6 +311,26 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
         requestBody.speakers_expected = expectedCount;
         console.log(`AssemblyAI: Setting speakers_expected to ${expectedCount}`);
       }
+
+      // Use AssemblyAI's Speaker Identification feature if we have speaker names
+      // This uses AI to identify speakers by name instead of generic labels (A, B, C)
+      // See: https://www.assemblyai.com/docs/speech-understanding/speaker-identification
+      if (options.speakerTimeframes?.length) {
+        const speakerNames = getUniqueSpeakers(options.speakerTimeframes);
+        if (speakerNames.length > 0) {
+          // Truncate names to 35 chars max as per API requirement
+          const truncatedNames = speakerNames.map(name => name.substring(0, 35));
+          requestBody.speech_understanding = {
+            request: {
+              speaker_identification: {
+                speaker_type: "name",
+                known_values: truncatedNames,
+              },
+            },
+          };
+          console.log(`AssemblyAI: Using Speaker Identification with names: ${truncatedNames.join(", ")}`);
+        }
+      }
     }
 
     // Custom vocabulary for better recognition
@@ -330,6 +350,8 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     if (!apiKey) {
       throw new TranscriptionError("AssemblyAI API key not configured", "assemblyai", "NO_API_KEY");
     }
+
+    console.log(`AssemblyAI: Request body:`, JSON.stringify(requestBody, null, 2));
 
     const response = await fetch(`${ASSEMBLYAI_API_URL}/transcript`, {
       method: "POST",
@@ -449,9 +471,17 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
       }));
     }
 
+    // Check if Speaker Identification already provided real names
+    // Real names are typically more than 1 character (vs "A", "B", "C")
+    const hasRealSpeakerNames = segments.some(seg => 
+      seg.speaker && seg.speaker.length > 1 && !/^Speaker [A-Z]$/.test(seg.speaker)
+    );
+
     // Map speaker labels to actual names if we have speaker timeframes
+    // Only do manual mapping if Speaker Identification didn't work
     let speakerMap: Record<string, string> = {};
-    if (speakerTimeframes?.length && segments.length) {
+    if (!hasRealSpeakerNames && speakerTimeframes?.length && segments.length) {
+      console.log(`AssemblyAI: Speaker Identification not used or didn't return names, falling back to manual mapping`);
       console.log(`AssemblyAI: Mapping ${segments.length} segments to ${getUniqueSpeakers(speakerTimeframes).length} known speakers`);
       
       const mapped = mapSpeakersToNames(segments, words, speakerTimeframes);
@@ -462,6 +492,11 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
       if (Object.keys(mapped.speakerMap).length > 0) {
         console.log(`AssemblyAI: Speaker mapping:`, mapped.speakerMap);
       }
+    } else if (hasRealSpeakerNames) {
+      console.log(`AssemblyAI: Speaker Identification returned real names, no manual mapping needed`);
+      // Log the speakers found
+      const uniqueSpeakers = [...new Set(segments.map(s => s.speaker).filter(Boolean))];
+      console.log(`AssemblyAI: Identified speakers:`, uniqueSpeakers);
     }
 
     // Rebuild text with speaker names if we have segments

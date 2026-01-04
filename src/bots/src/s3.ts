@@ -89,8 +89,17 @@ async function extractAudioFromVideo(videoBuffer: Buffer): Promise<Buffer> {
 
         ffmpeg.on("close", (code) => {
             if (code === 0) {
+                const audioBuffer = Buffer.concat(chunks);
                 console.log("Audio extraction completed successfully");
-                resolve(Buffer.concat(chunks));
+                console.log(`FFmpeg stderr output: ${stderrOutput.slice(-1000)}`);
+                
+                // Check if audio buffer is suspiciously small (likely empty)
+                if (audioBuffer.length < 1000) {
+                    console.warn(`WARNING: Audio buffer is very small (${audioBuffer.length} bytes) - video may not contain audio track`);
+                    console.warn("This usually means the video was recorded without audio or PulseAudio failed to capture audio");
+                }
+                
+                resolve(audioBuffer);
             } else {
                 reject(new Error(`FFmpeg exited with code ${code}. stderr: ${stderrOutput.slice(-500)}`));
             }

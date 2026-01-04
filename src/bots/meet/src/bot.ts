@@ -132,9 +132,21 @@ export class MeetsBot extends Bot {
   recordingPath: string;
   participants: Participant[] = [];
 
-  private registeredActivityTimestamps: {
-    [participantName: string]: [number];
-  } = {};
+  // Memory-efficient speaker tracking using time ranges instead of individual timestamps
+  // This prevents memory issues in long meetings (8-10+ hours)
+  private speakerTimeRanges: Map<string, Array<{start: number, end: number}>> = new Map();
+  private activeSpeakers: Map<string, { startTime: number, lastActivity: number }> = new Map();
+  
+  // Throttling: track last speaking event per participant to avoid flooding
+  private lastSpeakingEventTime: Map<string, number> = new Map();
+  private readonly SPEAKING_THROTTLE_MS = 300; // Minimum time between speaking events per participant
+  private readonly SILENCE_TIMEOUT_MS = 2000; // Time of no activity to consider speaker stopped
+  
+  // Interval handles for cleanup
+  private keepPanelOpenInterval?: NodeJS.Timeout;
+  private speakerCheckInterval?: NodeJS.Timeout;
+  private consolidationInterval?: NodeJS.Timeout;
+
   private startedRecording: boolean = false;
 
   private timeAloneStarted: number = Infinity;
@@ -165,7 +177,8 @@ export class MeetsBot extends Bot {
 
       "--use-fake-ui-for-media-stream",// automatically grants screen sharing permissions without a selection dialog.
       "--use-file-for-fake-video-capture=/dev/null",
-      "--use-file-for-fake-audio-capture=/dev/null",
+      // Note: Removed --use-file-for-fake-audio-capture to allow real audio capture
+      // The browser needs to output audio to PulseAudio so FFmpeg can record it
       '--auto-select-desktop-capture-source="Chrome"' // record the first tab automatically
     ];
     // Fetch
@@ -202,40 +215,168 @@ export class MeetsBot extends Bot {
 
   /**
    * Gets the speaker timeframes.
+   * Uses memory-efficient range-based storage that's safe for long meetings.
    * @returns {Array} - Returns an array of objects containing speaker names and their respective start and end times.
    */
   getSpeakerTimeframes(): SpeakerTimeframe[] {
-    const processedTimeframes: {
-      speakerName: string;
-      start: number;
-      end: number;
-    }[] = [];
-
-    // If time between chunks is less than this, we consider it the same utterance.
-    const utteranceThresholdMs = 3000;
-    for (const [speakerName, timeframesArray] of Object.entries(
-      this.registeredActivityTimestamps
-    )) {
-      let start = timeframesArray[0];
-      let end = timeframesArray[0];
-
-      for (let i = 1; i < timeframesArray.length; i++) {
-        const currentTimeframe = timeframesArray[i]!;
-        if (currentTimeframe - end < utteranceThresholdMs) {
-          end = currentTimeframe;
-        } else {
-          if (end - start > 500) {
-            processedTimeframes.push({ speakerName, start, end });
-          }
-          start = currentTimeframe;
-          end = currentTimeframe;
+    // Close any still-active speaking ranges
+    const endTime = Date.now() - this.recordingStartedAt;
+    this.activeSpeakers.forEach((state, speaker) => {
+      this.endSpeakerRange(speaker, endTime);
+    });
+    
+    // Final consolidation before returning
+    this.consolidateRanges();
+    
+    // Convert to SpeakerTimeframe format
+    const result: SpeakerTimeframe[] = [];
+    
+    this.speakerTimeRanges.forEach((ranges, speakerName) => {
+      for (const range of ranges) {
+        // Only include ranges longer than 500ms
+        if (range.end - range.start > 500) {
+          result.push({
+            speakerName,
+            start: range.start,
+            end: range.end
+          });
         }
       }
-      processedTimeframes.push({ speakerName, start, end });
-    }
-    processedTimeframes.sort((a, b) => a.start - b.start || a.end - b.end);
+    });
+    
+    // Sort by start time
+    result.sort((a, b) => a.start - b.start || a.end - b.end);
+    
+    // Log stats
+    console.log(`[Speaker Detection] Generated ${result.length} timeframes for ${this.speakerTimeRanges.size} speakers`);
+    this.speakerTimeRanges.forEach((ranges, speaker) => {
+      const totalTime = ranges.reduce((sum, r) => sum + (r.end - r.start), 0);
+      console.log(`  ${speaker}: ${ranges.length} ranges, ${Math.round(totalTime / 1000)}s total speaking time`);
+    });
+    
+    return result;
+  }
 
-    return processedTimeframes;
+  /**
+   * Start a new speaking range for a participant.
+   * Called when we detect someone started speaking.
+   */
+  private startSpeakerRange(speakerName: string, timestamp: number) {
+    if (this.activeSpeakers.has(speakerName)) {
+      // Already speaking, just update last activity
+      const state = this.activeSpeakers.get(speakerName)!;
+      state.lastActivity = timestamp;
+      return;
+    }
+    
+    this.activeSpeakers.set(speakerName, { 
+      startTime: timestamp, 
+      lastActivity: timestamp 
+    });
+    console.log(`[Speaker] ${speakerName} started speaking at ${Math.round(timestamp / 1000)}s`);
+  }
+
+  /**
+   * End the current speaking range for a participant.
+   * Called when we detect someone stopped speaking.
+   */
+  private endSpeakerRange(speakerName: string, timestamp: number) {
+    const state = this.activeSpeakers.get(speakerName);
+    if (!state) {
+      return; // Wasn't speaking
+    }
+    
+    this.activeSpeakers.delete(speakerName);
+    
+    const duration = timestamp - state.startTime;
+    // Only save if range is meaningful (>500ms)
+    if (duration > 500) {
+      if (!this.speakerTimeRanges.has(speakerName)) {
+        this.speakerTimeRanges.set(speakerName, []);
+      }
+      this.speakerTimeRanges.get(speakerName)!.push({ 
+        start: state.startTime, 
+        end: timestamp 
+      });
+      console.log(`[Speaker] ${speakerName} stopped: ${Math.round(state.startTime / 1000)}s - ${Math.round(timestamp / 1000)}s (${Math.round(duration / 1000)}s)`);
+    }
+  }
+
+  /**
+   * Update speaker activity - called when we detect speaking activity.
+   * Handles throttling and range management.
+   */
+  private updateSpeakerActivity(speakerName: string, timestamp: number) {
+    // Log every speaking event (but not too often)
+    const lastLogTime = this.lastSpeakingEventTime.get(`_log_${speakerName}`) || 0;
+    if (timestamp - lastLogTime > 5000) { // Log at most every 5 seconds per speaker
+      console.log(`[Speaker] Activity detected: ${speakerName} at ${Math.round(timestamp / 1000)}s`);
+      this.lastSpeakingEventTime.set(`_log_${speakerName}`, timestamp);
+    }
+    
+    // Throttle: ignore if we just processed an event for this speaker
+    const lastEvent = this.lastSpeakingEventTime.get(speakerName) || 0;
+    if (timestamp - lastEvent < this.SPEAKING_THROTTLE_MS) {
+      // Just update the activity time for the active speaker
+      const state = this.activeSpeakers.get(speakerName);
+      if (state) {
+        state.lastActivity = timestamp;
+      }
+      return;
+    }
+    
+    this.lastSpeakingEventTime.set(speakerName, timestamp);
+    this.startSpeakerRange(speakerName, timestamp);
+  }
+
+  /**
+   * Check for speakers who have gone silent and end their ranges.
+   * Should be called periodically (every second).
+   */
+  private checkForSilentSpeakers() {
+    const now = Date.now() - this.recordingStartedAt;
+    
+    this.activeSpeakers.forEach((state, speaker) => {
+      if (now - state.lastActivity > this.SILENCE_TIMEOUT_MS) {
+        this.endSpeakerRange(speaker, state.lastActivity);
+      }
+    });
+  }
+
+  /**
+   * Consolidate adjacent time ranges to save memory.
+   * Merges ranges that are within 3 seconds of each other.
+   */
+  private consolidateRanges() {
+    const MERGE_GAP_MS = 3000; // Merge ranges within 3 seconds
+    
+    this.speakerTimeRanges.forEach((ranges, speaker) => {
+      if (ranges.length < 2) return;
+      
+      // Sort by start time
+      ranges.sort((a, b) => a.start - b.start);
+      
+      // Merge adjacent ranges
+      const merged: Array<{start: number, end: number}> = [];
+      let current = ranges[0]!;
+      
+      for (let i = 1; i < ranges.length; i++) {
+        const next = ranges[i]!;
+        if (next.start - current.end < MERGE_GAP_MS) {
+          // Merge: extend current range
+          current = { start: current.start, end: Math.max(current.end, next.end) };
+        } else {
+          merged.push(current);
+          current = next;
+        }
+      }
+      merged.push(current);
+      
+      if (merged.length < ranges.length) {
+        console.log(`[Consolidate] ${speaker}: ${ranges.length} → ${merged.length} ranges`);
+        this.speakerTimeRanges.set(speaker, merged);
+      }
+    });
   }
 
   /**
@@ -269,6 +410,19 @@ export class MeetsBot extends Bot {
 
     // Create Page, Go to
     this.page = await context.newPage();
+    
+    // Capture browser console logs for debugging
+    this.page.on('console', (msg) => {
+      const type = msg.type();
+      const text = msg.text();
+      // Only log important messages to avoid spam
+      if (type === 'error' || type === 'warning' || 
+          text.includes('[Speaker') || text.includes('[DOM]') || 
+          text.includes('[SpeechObserver]') || text.includes('Participant') ||
+          text.includes('CRITICAL') || text.includes('✓') || text.includes('⚠️')) {
+        console.log(`[Browser ${type}] ${text}`);
+      }
+    });
   }
 
 
@@ -437,7 +591,7 @@ export class MeetsBot extends Bot {
 
   /**
    * Starts the recording of the call using ffmpeg.
-   * 
+   *
    * This function initializes an ffmpeg process to capture the screen and audio of the meeting.
    * It ensures that only one recording process is active at a time and logs the status of the recording.
    * 
@@ -447,6 +601,19 @@ export class MeetsBot extends Bot {
 
     console.log('Attempting to start the recording ... @', this.getRecordingPath());
     if (this.ffmpegProcess) return console.log('Recording already started.');
+
+    // Check PulseAudio status before starting recording
+    try {
+      const { execSync } = require('child_process');
+      const paStatus = execSync('pactl info 2>&1', { encoding: 'utf8' });
+      console.log('PulseAudio status:', paStatus.split('\n').slice(0, 5).join('\n'));
+      
+      // List audio sources
+      const paSources = execSync('pactl list sources short 2>&1', { encoding: 'utf8' });
+      console.log('Available audio sources:', paSources);
+    } catch (err) {
+      console.warn('Warning: Could not check PulseAudio status:', err);
+    }
 
     this.ffmpegProcess = spawn('ffmpeg', this.getFFmpegParams());
 
@@ -460,6 +627,9 @@ export class MeetsBot extends Bot {
       if (!this.startedRecording) {
         console.log('Recording Started.');
         this.startedRecording = true;
+        // Set the recording start timestamp for speaker timeframe calculation
+        this.recordingStartedAt = Date.now();
+        console.log(`Recording started at timestamp: ${this.recordingStartedAt}`);
       }
     });
 
@@ -614,6 +784,7 @@ export class MeetsBot extends Bot {
     console.log("Waiting for the 'Others might see you differently' popup...");
     await this.handleInfoPopup();
 
+    // Simple approach from old_bot.ts - Find people icon and click parent button
     try {
       // UI patch: Find new people icon and click parent button
       const hasPeopleIcon = await this.page.evaluate(() => {
@@ -631,19 +802,26 @@ export class MeetsBot extends Bot {
       });
 
       if (hasPeopleIcon) {
-        console.log("Using new People button selector.");
+        console.log("Using new People button selector (icon-based).");
       } else {
-        console.warn("People button not found, using fallback selector.");
-        await this.page.click(peopleButton);
+        console.log("People icon not found, trying fallback selector...");
+        try {
+          await this.page.click('//button[@aria-label="People"]', { timeout: 2000 });
+          console.log("Clicked People button via aria-label.");
+        } catch (e) {
+          console.warn("People button not found with fallback selector either.");
+        }
       }
 
       // Wait for the people panel to be visible
       await this.page.waitForSelector('[aria-label="Participants"]', {
         state: "visible",
+        timeout: 5000
       });
+      console.log("✓ Participants panel opened successfully!");
     } catch (error) {
       console.warn("Could not click People button. Continuing anyways.");
-      }
+    }
 
     await this.page.exposeFunction("getParticipants", () => {
       return this.participants;
@@ -674,37 +852,35 @@ export class MeetsBot extends Bot {
       (participant: Participant) => {
         this.lastActivity = Date.now();
         const relativeTimestamp = Date.now() - this.recordingStartedAt;
-        console.log(
-          `Participant ${participant.name} is speaking at ${relativeTimestamp}ms`
-        );
-
-        if (!this.registeredActivityTimestamps[participant.name]) {
-          this.registeredActivityTimestamps[participant.name] = [relativeTimestamp];
-        } else {
-          this.registeredActivityTimestamps[participant.name]!.push(relativeTimestamp);
-        }
+        
+        // Use memory-efficient range-based tracking with throttling
+        this.updateSpeakerActivity(participant.name, relativeTimestamp);
       }
     );
 
     // Add mutation observer for participant list
     // Use in the browser context to monitor for participants joining and leaving
-    await this.page.evaluate(() => {
-      const peopleList = document.querySelector('[aria-label="Participants"]');
+    // Using simple approach from the old working bot
+    const participantsListFound = await this.page.evaluate(() => {
+      // Simple selector that worked in old bot
+      var peopleList = document.querySelector('[aria-label="Participants"]');
+      
       if (!peopleList) {
         console.error("Could not find participants list element");
-        return;
+        return false;
       }
 
-      const initialParticipants = Array.from(peopleList.childNodes).filter(
-        (node) => node.nodeType === Node.ELEMENT_NODE
+      var initialParticipants = Array.from(peopleList.childNodes).filter(
+        function(node) { return node.nodeType === Node.ELEMENT_NODE; }
       );
       window.participantArray = [];
       window.mergedAudioParticipantArray = [];
 
-      window.observeSpeech = (node, participant) => {
-        console.debug("Observing speech for participant:", participant.name);
-        const activityObserver = new MutationObserver((mutations) => {
-          mutations.forEach(() => {
+      // Simple speech observer - any class change triggers speaking event
+      window.observeSpeech = function(node, participant) {
+        console.log("Observing speech for participant:", participant.name);
+        var activityObserver = new MutationObserver(function(mutations) {
+          mutations.forEach(function() {
             window.registerParticipantSpeaking(participant);
           });
         });
@@ -717,158 +893,208 @@ export class MeetsBot extends Bot {
         participant.observer = activityObserver;
       };
 
-      window.handleMergedAudio = () => {
-        const mergedAudioNode = document.querySelector(
-          '[aria-label="Merged audio"]'
-        );
-        if (mergedAudioNode) {
-          const detectedParticipants: Participant[] = [];
+      window.handleMergedAudio = function() {
+        var mergedAudioNode = document.querySelector('[aria-label="Merged audio"]');
+        if (mergedAudioNode && mergedAudioNode.parentNode) {
+          var detectedParticipants = [];
           
-          // Gather all participants in the merged audio node
-          mergedAudioNode.parentNode!.childNodes.forEach((childNode: any) => {
-            const participantId = childNode.getAttribute("data-participant-id");
-            if (!participantId) {
-              return;
-            }
+          var childNodes = mergedAudioNode.parentNode.childNodes;
+          for (var i = 0; i < childNodes.length; i++) {
+            var childNode = childNodes[i];
+            if (!childNode.getAttribute) continue;
+            var participantId = childNode.getAttribute("data-participant-id");
+            if (!participantId) continue;
             detectedParticipants.push({
               id: participantId,
               name: childNode.getAttribute("aria-label"),
             });
-          });
+          }
 
-          // detected new participant in the merged node
-          if (
-            detectedParticipants.length >
-            window.mergedAudioParticipantArray.length
-          ) {
-            // add them
-            const filteredParticipants = detectedParticipants.filter(
-              (participant: Participant) =>
-                !window.mergedAudioParticipantArray.find(
-                  (p: Participant) => p.id === participant.id
-                )
-            );
-            filteredParticipants.forEach((participant: Participant) => {
-              const vidBlock = document.querySelector(
-                `[data-requested-participant-id="${participant.id}"]`
-              );
+          if (detectedParticipants.length > window.mergedAudioParticipantArray.length) {
+            var filteredParticipants = detectedParticipants.filter(function(participant) {
+              return !window.mergedAudioParticipantArray.find(function(p) { return p.id === participant.id; });
+            });
+            for (var j = 0; j < filteredParticipants.length; j++) {
+              var participant = filteredParticipants[j];
+              var vidBlock = document.querySelector('[data-requested-participant-id="' + participant.id + '"]');
               window.mergedAudioParticipantArray.push(participant);
               window.onParticipantJoin(participant);
               window.observeSpeech(vidBlock, participant);
               window.participantArray.push(participant);
+            }
+          } else if (detectedParticipants.length < window.mergedAudioParticipantArray.length) {
+            var leftParticipants = window.mergedAudioParticipantArray.filter(function(participant) {
+              return !detectedParticipants.find(function(p) { return p.id === participant.id; });
             });
-          } else if (
-            detectedParticipants.length <
-            window.mergedAudioParticipantArray.length
-          ) {
-            // some participants no longer in the merged node
-            const filteredParticipants =
-              window.mergedAudioParticipantArray.filter(
-                (participant: Participant) =>
-                  !detectedParticipants.find(
-                    (p: Participant) => p.id === participant.id
-                  )
-              );
-            filteredParticipants.forEach((participant: Participant) => {
-              const videoRectangle = document.querySelector(
-                `[data-requested-participant-id="${participant.id}"]`
-              );
+            for (var k = 0; k < leftParticipants.length; k++) {
+              var leftParticipant = leftParticipants[k];
+              var videoRectangle = document.querySelector('[data-requested-participant-id="' + leftParticipant.id + '"]');
               if (!videoRectangle) {
-                // they've left the meeting
-                window.onParticipantLeave(participant);
-                window.participantArray = window.participantArray.filter(
-                  (p: Participant) => p.id !== participant.id
-                );
+                window.onParticipantLeave(leftParticipant);
+                window.participantArray = window.participantArray.filter(function(p) { return p.id !== leftParticipant.id; });
               }
-
-              // update participants under merged audio
-              window.mergedAudioParticipantArray =
-                window.mergedAudioParticipantArray.filter(
-                  (p: Participant) => p.id !== participant.id
-                );
-            });
+              window.mergedAudioParticipantArray = window.mergedAudioParticipantArray.filter(function(p) { return p.id !== leftParticipant.id; });
+            }
           }
         }
       };
 
-      initialParticipants.forEach((node: any) => {
-        const participant = {
-          id: node.getAttribute("data-participant-id"),
-          name: node.getAttribute("aria-label"),
+      // Process initial participants
+      for (var initIdx = 0; initIdx < initialParticipants.length; initIdx++) {
+        var node = initialParticipants[initIdx];
+        var participant = {
+          id: node.getAttribute ? node.getAttribute("data-participant-id") : null,
+          name: node.getAttribute ? node.getAttribute("aria-label") : null,
         };
         if (!participant.id) {
           window.handleMergedAudio();
-          return;
+          continue;
         }
         window.onParticipantJoin(participant);
         window.observeSpeech(node, participant);
         window.participantArray.push(participant);
-      });
+      }
 
       console.log("Setting up mutation observer on participants list");
-      const peopleObserver = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
+      var peopleObserver = new MutationObserver(function(mutations) {
+        for (var mIdx = 0; mIdx < mutations.length; mIdx++) {
+          var mutation = mutations[mIdx];
           if (mutation.type === "childList") {
-            mutation.removedNodes.forEach((node: any) => {
-              console.log("Removed Node", node);
+            // Handle removed nodes
+            for (var rIdx = 0; rIdx < mutation.removedNodes.length; rIdx++) {
+              var removedNode = mutation.removedNodes[rIdx];
+              console.log("Removed Node", removedNode);
               if (
-                node.nodeType === Node.ELEMENT_NODE &&
-                node.getAttribute &&
-                node.getAttribute("data-participant-id") &&
-                window.participantArray.find(
-                  (p: Participant) =>
-                    p.id === node.getAttribute("data-participant-id")
-                )
+                removedNode.nodeType === Node.ELEMENT_NODE &&
+                removedNode.getAttribute &&
+                removedNode.getAttribute("data-participant-id") &&
+                window.participantArray.find(function(p) { return p.id === removedNode.getAttribute("data-participant-id"); })
               ) {
-                console.log(
-                  "Participant left:",
-                  node.getAttribute("aria-label")
-                );
+                console.log("Participant left:", removedNode.getAttribute("aria-label"));
                 window.onParticipantLeave({
-                  id: node.getAttribute("data-participant-id"),
-                  name: node.getAttribute("aria-label"),
+                  id: removedNode.getAttribute("data-participant-id"),
+                  name: removedNode.getAttribute("aria-label"),
                 });
-                window.participantArray = window.participantArray.filter(
-                  (p: Participant) =>
-                    p.id !== node.getAttribute("data-participant-id")
-                );
-              } else if (
-                document.querySelector('[aria-label="Merged audio"]')
-              ) {
+                window.participantArray = window.participantArray.filter(function(p) {
+                  return p.id !== removedNode.getAttribute("data-participant-id");
+                });
+              } else if (document.querySelector('[aria-label="Merged audio"]')) {
                 window.handleMergedAudio();
               }
-            });
-          }
-          mutation.addedNodes.forEach((node: any) => {
-            console.log("Added Node", node);
-            if (
-                node.getAttribute &&
-              node.getAttribute("data-participant-id") &&
-              !window.participantArray.find(
-                (p: Participant) =>
-                  p.id === node.getAttribute("data-participant-id")
-              )
+            }
+            
+            // Handle added nodes
+            for (var aIdx = 0; aIdx < mutation.addedNodes.length; aIdx++) {
+              var addedNode = mutation.addedNodes[aIdx];
+              console.log("Added Node", addedNode);
+              if (
+                addedNode.getAttribute &&
+                addedNode.getAttribute("data-participant-id") &&
+                !window.participantArray.find(function(p) { return p.id === addedNode.getAttribute("data-participant-id"); })
               ) {
-                console.log(
-                "Participant joined:",
-                  node.getAttribute("aria-label")
-                );
-                    const participant = {
-                      id: node.getAttribute("data-participant-id"),
-                      name: node.getAttribute("aria-label"),
-                    };
-              window.onParticipantJoin(participant);
-              window.observeSpeech(node, participant);
-              window.participantArray.push(participant);
-            } else if (document.querySelector('[aria-label="Merged audio"]')) {
-              window.handleMergedAudio();
+                console.log("Participant joined:", addedNode.getAttribute("aria-label"));
+                var newParticipant = {
+                  id: addedNode.getAttribute("data-participant-id"),
+                  name: addedNode.getAttribute("aria-label"),
+                };
+                window.onParticipantJoin(newParticipant);
+                window.observeSpeech(addedNode, newParticipant);
+                window.participantArray.push(newParticipant);
+              } else if (document.querySelector('[aria-label="Merged audio"]')) {
+                window.handleMergedAudio();
               }
-            });
-        });
+            }
+          }
+        }
       });
 
       peopleObserver.observe(peopleList, { childList: true, subtree: true });
+      return true;
     });
+
+    if (!participantsListFound) {
+      console.error("⚠️ FAILED TO SET UP PARTICIPANT TRACKING");
+      console.error("⚠️ Speaker names will appear as A, B, C in transcription");
+    } else {
+      console.log("✓ Participant tracking set up successfully!");
+    }
+
+    // Set up interval to keep participants panel open
+    // Google Meet sometimes closes the panel, which breaks speaker detection
+    this.keepPanelOpenInterval = setInterval(async () => {
+      try {
+        const panelOpen = await this.page.evaluate(() => {
+          // Check if participants list is visible
+          const selectors = [
+            '[role="list"][aria-label="Participants"]',
+            '[aria-label="Participants"]',
+            '[jsname="jrQDbd"]'
+          ];
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el && (el as HTMLElement).offsetParent !== null) {
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (!panelOpen) {
+          console.log('[DOM] Participants panel closed, attempting to reopen...');
+          
+          // Try multiple strategies to reopen
+          let reopened = false;
+          
+          // Strategy 1: Click by aria-label
+          try {
+            await this.page.click('//button[@aria-label="People"]', { timeout: 1000 });
+            reopened = true;
+          } catch (e) {
+            // Try next strategy
+          }
+          
+          // Strategy 2: Find by icon
+          if (!reopened) {
+            try {
+              await this.page.evaluate(() => {
+                const peopleIcon = Array.from(document.querySelectorAll('i')).find(
+                  el => el.textContent?.trim() === 'people'
+                );
+                if (peopleIcon) {
+                  const button = peopleIcon.closest('button');
+                  if (button) {
+                    button.click();
+                    return true;
+                  }
+                }
+                return false;
+              });
+            } catch (e) {
+              // Failed to reopen
+            }
+          }
+        }
+      } catch (e) {
+        // Page might be navigating, ignore
+      }
+    }, 10000); // Check every 10 seconds
+
+    // Set up interval to check for speakers who stopped speaking
+    this.speakerCheckInterval = setInterval(() => {
+      this.checkForSilentSpeakers();
+    }, 1000); // Check every second
+
+    // Set up interval for periodic consolidation (memory management for long meetings)
+    this.consolidationInterval = setInterval(() => {
+      this.consolidateRanges();
+      
+      // Log memory stats
+      let totalRanges = 0;
+      this.speakerTimeRanges.forEach((ranges) => {
+        totalRanges += ranges.length;
+      });
+      console.log(`[Memory] ${this.speakerTimeRanges.size} speakers, ${totalRanges} total ranges, ${this.activeSpeakers.size} currently speaking`);
+    }, 5 * 60 * 1000); // Every 5 minutes
 
     // Loop -- check for end meeting conditions every second
     console.log("Waiting until a leave condition is fulfilled..");
@@ -931,6 +1157,38 @@ export class MeetsBot extends Bot {
    * Clean up the meeting
    */
   async endLife() {
+    // Clear all intervals
+    if (this.keepPanelOpenInterval) {
+      clearInterval(this.keepPanelOpenInterval);
+      this.keepPanelOpenInterval = undefined;
+    }
+    if (this.speakerCheckInterval) {
+      clearInterval(this.speakerCheckInterval);
+      this.speakerCheckInterval = undefined;
+    }
+    if (this.consolidationInterval) {
+      clearInterval(this.consolidationInterval);
+      this.consolidationInterval = undefined;
+    }
+
+    // Close any active speaker ranges before ending
+    const endTime = Date.now() - this.recordingStartedAt;
+    this.activeSpeakers.forEach((state, speaker) => {
+      this.endSpeakerRange(speaker, endTime);
+    });
+    
+    // Final consolidation
+    this.consolidateRanges();
+
+    // Log final speaker stats
+    console.log('[Speaker Detection] Final stats:');
+    let totalRanges = 0;
+    this.speakerTimeRanges.forEach((ranges, speaker) => {
+      totalRanges += ranges.length;
+      const totalTime = ranges.reduce((sum, r) => sum + (r.end - r.start), 0);
+      console.log(`  ${speaker}: ${ranges.length} ranges, ${Math.round(totalTime / 1000)}s total`);
+    });
+    console.log(`  Total: ${totalRanges} ranges across ${this.speakerTimeRanges.size} speakers`);
 
     // Ensure Recording is done
     console.log('Stopping Recording ...')
