@@ -179,6 +179,11 @@ export class MeetsBot extends Bot {
       "--use-file-for-fake-video-capture=/dev/null",
       // Note: Removed --use-file-for-fake-audio-capture to allow real audio capture
       // The browser needs to output audio to PulseAudio so FFmpeg can record it
+      
+      // Enable audio output in headless mode
+      "--autoplay-policy=no-user-gesture-required", // Allow audio to play without user interaction
+      "--disable-features=AudioServiceOutOfProcess", // Keep audio in main process for better capture
+      
       '--auto-select-desktop-capture-source="Chrome"' // record the first tab automatically
     ];
     // Fetch
@@ -563,9 +568,14 @@ export class MeetsBot extends Bot {
     const videoInputFormat = "x11grab";
     const audioInputFormat = "pulse";
     const videoSource = ":99.0";
-    const audioSource = "default";
+    // Use the monitor of the virtual speaker to capture browser audio
+    // The monitor captures what's being played to the virtual speaker
+    // Use index 1 or the full name with proper escaping
+    const audioSource = "1"; // Use the PulseAudio source index
     const audioBitrate = "128k";
     const fps = "25";
+
+    console.log(`Audio source: ${audioSource}`);
 
     return [
       '-v', 'verbose', // Verbose logging for debugging
@@ -602,17 +612,54 @@ export class MeetsBot extends Bot {
     console.log('Attempting to start the recording ... @', this.getRecordingPath());
     if (this.ffmpegProcess) return console.log('Recording already started.');
 
-    // Check PulseAudio status before starting recording
+    // Check and configure PulseAudio before starting recording
     try {
       const { execSync } = require('child_process');
-      const paStatus = execSync('pactl info 2>&1', { encoding: 'utf8' });
-      console.log('PulseAudio status:', paStatus.split('\n').slice(0, 5).join('\n'));
+      
+      console.log('=== PulseAudio Diagnostics ===');
+      
+      // Check if PulseAudio is running
+      try {
+        const paStatus = execSync('pactl info 2>&1', { encoding: 'utf8' });
+        console.log('PulseAudio is running');
+        console.log('Server info:', paStatus.split('\n').slice(0, 5).join('\n'));
+      } catch (err) {
+        console.error('PulseAudio is not running! Starting it...');
+        execSync('pulseaudio --start --exit-idle-time=-1 2>&1', { encoding: 'utf8' });
+        await new Promise(r => setTimeout(r, 1000)); // Wait for PA to start
+      }
       
       // List audio sources
       const paSources = execSync('pactl list sources short 2>&1', { encoding: 'utf8' });
-      console.log('Available audio sources:', paSources);
+      console.log('Available audio sources:');
+      console.log(paSources);
+      
+      // List audio sinks (outputs)
+      const paSinks = execSync('pactl list sinks short 2>&1', { encoding: 'utf8' });
+      console.log('Available audio sinks:');
+      console.log(paSinks);
+      
+      // Create a null sink and its monitor for capturing browser audio
+      try {
+        console.log('Creating null sink for audio capture...');
+        execSync('pactl load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description="Virtual_Speaker" 2>&1', { encoding: 'utf8' });
+        console.log('Null sink created successfully');
+        
+        // Set it as default sink so browser outputs to it
+        execSync('pactl set-default-sink virtual_speaker 2>&1', { encoding: 'utf8' });
+        console.log('Set virtual_speaker as default sink');
+      } catch (err) {
+        console.log('Note: Could not create null sink (may already exist):', err);
+      }
+      
+      // List sources again to see the monitor
+      const paSourcesAfter = execSync('pactl list sources short 2>&1', { encoding: 'utf8' });
+      console.log('Audio sources after null sink creation:');
+      console.log(paSourcesAfter);
+      
+      console.log('=== End PulseAudio Diagnostics ===');
     } catch (err) {
-      console.warn('Warning: Could not check PulseAudio status:', err);
+      console.warn('Warning: Could not configure PulseAudio:', err);
     }
 
     this.ffmpegProcess = spawn('ffmpeg', this.getFFmpegParams());
@@ -633,20 +680,31 @@ export class MeetsBot extends Bot {
       }
     });
 
-    // Log Output of stderr
-    // Log to console if the env var is set
-    // Turn it on if ffmpeg gives a weird error code.
-    const logFfmpeg = process.env.MEET_FFMPEG_STDERR_ECHO === 'true'
-    if (logFfmpeg ?? false) {
-      this.ffmpegProcess.stderr.on('data', (data) => {
-        const text = data.toString();
+    // Log Output of stderr - ALWAYS log for audio debugging
+    // Store stderr output for debugging
+    let stderrBuffer = '';
+    this.ffmpegProcess.stderr.on('data', (data) => {
+      const text = data.toString();
+      stderrBuffer += text;
+      
+      // Log important messages
+      if (text.includes('error') || text.includes('Error') || text.includes('Invalid') || 
+          text.includes('failed') || text.includes('Failed')) {
         console.error(`ffmpeg stderr: ${text}`);
-      });
-    }
+      }
+      
+      // Log audio stream info
+      if (text.includes('Audio:') || text.includes('Stream #')) {
+        console.log(`ffmpeg: ${text.trim()}`);
+      }
+    });
 
     // Report when the process exits
     this.ffmpegProcess.on('exit', (code) => {
       console.log(`ffmpeg exited with code ${code}`);
+      if (code !== 0 && code !== null) {
+        console.error(`FFmpeg failed! Last 2000 chars of stderr:\n${stderrBuffer.slice(-2000)}`);
+      }
       this.ffmpegProcess = null;
     });
 
@@ -784,43 +842,125 @@ export class MeetsBot extends Bot {
     console.log("Waiting for the 'Others might see you differently' popup...");
     await this.handleInfoPopup();
 
-    // Simple approach from old_bot.ts - Find people icon and click parent button
-    try {
-      // UI patch: Find new people icon and click parent button
-      const hasPeopleIcon = await this.page.evaluate(() => {
-        const peopleButtonChild = Array.from(
-          document.querySelectorAll("i")
-        ).find((el) => el.textContent?.trim() === "people");
-        if (peopleButtonChild) {
-          const newPeopleButton = peopleButtonChild.closest("button");
-          if (newPeopleButton) {
-            newPeopleButton.click();
+    // Try to open the participants panel - multiple attempts with proper waiting
+    // TESTED: The People button in Google Meet is a div[role="button"] in the top-right corner
+    // with text containing "People" and a participant count
+    let panelOpened = false;
+    const maxAttempts = 5;
+    
+    for (let attempt = 1; attempt <= maxAttempts && !panelOpened; attempt++) {
+      try {
+        console.log(`Attempt ${attempt}/${maxAttempts}: Opening participants panel...`);
+        
+        // TESTED AND WORKING: Find People button using div[role="button"] with text "People"
+        const clickResult = await this.page.evaluate(`(function() {
+          var result = { clicked: false, method: '' };
+          
+          // Method 1 (TESTED): div[role="button"] with aria-haspopup="dialog" containing "People" text
+          var roleButtons = document.querySelectorAll('div[role="button"]');
+          for (var i = 0; i < roleButtons.length; i++) {
+            var btn = roleButtons[i];
+            var text = (btn.textContent || '').toLowerCase();
+            if (text.indexOf('people') >= 0) {
+              btn.click();
+              result.clicked = true;
+              result.method = 'div[role="button"] with People text';
+              return result;
+            }
+          }
+          
+          // Method 2: div[role="button"] with aria-haspopup="dialog"
+          var dialogButtons = document.querySelectorAll('div[role="button"][aria-haspopup="dialog"]');
+          for (var j = 0; j < dialogButtons.length; j++) {
+            var btn = dialogButtons[j];
+            var text = (btn.textContent || '').toLowerCase();
+            // Look for participant count pattern (e.g., "People2" or just numbers)
+            if (text.indexOf('people') >= 0 || /\\d+/.test(text)) {
+              btn.click();
+              result.clicked = true;
+              result.method = 'div[role="button"][aria-haspopup="dialog"]';
+              return result;
+            }
+          }
+          
+          // Method 3: Traditional button element fallback
+          var buttons = document.querySelectorAll('button');
+          for (var k = 0; k < buttons.length; k++) {
+            var label = (buttons[k].getAttribute('aria-label') || '').toLowerCase();
+            if (label.indexOf('people') >= 0 || label.indexOf('participant') >= 0) {
+              buttons[k].click();
+              result.clicked = true;
+              result.method = 'button with aria-label';
+              return result;
+            }
+          }
+          
+          // Method 4: Icon with text "people" or "group" 
+          var icons = document.querySelectorAll('i');
+          for (var m = 0; m < icons.length; m++) {
+            var txt = (icons[m].textContent || '').trim().toLowerCase();
+            if (txt === 'people' || txt === 'group' || txt === 'groups') {
+              var parentBtn = icons[m].closest('button') || icons[m].closest('[role="button"]');
+              if (parentBtn) {
+                parentBtn.click();
+                result.clicked = true;
+                result.method = 'icon "' + txt + '"';
+                return result;
+              }
+            }
+          }
+          
+          return result;
+        })()`);
+        
+        if (clickResult.clicked) {
+          console.log(`  ✓ Clicked via ${clickResult.method}`);
+        } else {
+          console.log("  ✗ No People button found");
+        }
+        
+        // Wait for panel to appear
+        console.log("  Waiting for participants panel to appear...");
+        await this.page.waitForTimeout(2000);
+        
+        // Verify the panel is actually open
+        panelOpened = await this.page.evaluate(`(function() {
+          // Check for participants list
+          var participantsList = document.querySelector('[role="list"][aria-label="Participants"]');
+          if (participantsList && participantsList.offsetParent !== null) {
+            console.log("[DEBUG] Panel open - found [aria-label='Participants']");
             return true;
           }
+          
+          // Check for any list with role="listitem" and data-participant-id children
+          var allLists = document.querySelectorAll('[role="list"]');
+          for (var i = 0; i < allLists.length; i++) {
+            var items = allLists[i].querySelectorAll('[role="listitem"][data-participant-id]');
+            if (items.length > 0 && allLists[i].offsetParent !== null) {
+              console.log("[DEBUG] Panel open - found list with " + items.length + " participants");
+              return true;
+            }
+          }
+          
+          return false;
+        })()`);
+        
+        if (panelOpened) {
+          console.log("  ✓ Participants panel confirmed open!");
+          break;
+        } else {
+          console.log("  ✗ Panel not open yet, retrying...");
         }
-        return false;
-      });
-
-      if (hasPeopleIcon) {
-        console.log("Using new People button selector (icon-based).");
-      } else {
-        console.log("People icon not found, trying fallback selector...");
-        try {
-          await this.page.click('//button[@aria-label="People"]', { timeout: 2000 });
-          console.log("Clicked People button via aria-label.");
-        } catch (e) {
-          console.warn("People button not found with fallback selector either.");
-        }
+      } catch (error) {
+        console.log(`  ✗ Attempt ${attempt} failed:`, error.message);
       }
-
-      // Wait for the people panel to be visible
-      await this.page.waitForSelector('[aria-label="Participants"]', {
-        state: "visible",
-        timeout: 5000
-      });
-      console.log("✓ Participants panel opened successfully!");
-    } catch (error) {
-      console.warn("Could not click People button. Continuing anyways.");
+    }
+    
+    if (!panelOpened) {
+      console.error("⚠️ Could not open participants panel after", maxAttempts, "attempts");
+      console.error("⚠️ Speaker detection will not work!");
+    } else {
+      console.log("✅ Participants panel is open and ready");
     }
 
     await this.page.exposeFunction("getParticipants", () => {
@@ -859,149 +999,247 @@ export class MeetsBot extends Bot {
     );
 
     // Add mutation observer for participant list
-    // Use in the browser context to monitor for participants joining and leaving
-    // Using simple approach from the old working bot
-    const participantsListFound = await this.page.evaluate(() => {
-      // Simple selector that worked in old bot
-      var peopleList = document.querySelector('[aria-label="Participants"]');
+    // TESTED AND VERIFIED GENERIC APPROACH:
+    // - Uses role="list" and aria-label="Participants" (standard ARIA)
+    // - Uses role="listitem" with data-participant-id (standard + data attribute)
+    // - Speaking detection: A div with exactly 3 child divs becomes VISIBLE when speaking
+    //   This is a universal pattern - the audio visualizer has 3 bars and shows when active
+    
+    // CRITICAL: Wait longer for the panel to fully load
+    // The panel needs time to render after being clicked
+    console.log("Waiting for participants panel to fully load...");
+    await this.page.waitForTimeout(3000);
+    
+    const participantsListFound = await this.page.evaluate(`(function() {
+      console.log("[Speaker] === Starting participant detection setup ===");
+      
+      // Step 1: Find all lists and log them
+      var allLists = document.querySelectorAll('[role="list"]');
+      console.log("[Speaker] Total lists with role='list':", allLists.length);
+      
+      for (var j = 0; j < allLists.length; j++) {
+        var list = allLists[j];
+        var label = list.getAttribute('aria-label');
+        var visible = list.offsetParent !== null;
+        var itemsCount = list.querySelectorAll('[role="listitem"]').length;
+        console.log("[Speaker]   List " + j + ": aria-label='" + label + "', visible=" + visible + ", items=" + itemsCount);
+      }
+      
+      // Step 2: Try to find participants list
+      var peopleList = null;
+      
+      // Try exact match first
+      peopleList = document.querySelector('[role="list"][aria-label="Participants"]');
+      if (peopleList) {
+        console.log("[Speaker] ✓ Found via [aria-label='Participants']");
+      }
+      
+      // Try jsname
+      if (!peopleList) {
+        peopleList = document.querySelector('[jsname="jrQDbd"]');
+        if (peopleList) {
+          console.log("[Speaker] ✓ Found via [jsname='jrQDbd']");
+        }
+      }
+      
+      // Try finding by looking for list with participant children
+      if (!peopleList) {
+        console.log("[Speaker] Searching for list containing participant items...");
+        for (var k = 0; k < allLists.length; k++) {
+          var items = allLists[k].querySelectorAll('[role="listitem"][data-participant-id]');
+          if (items.length > 0) {
+            console.log("[Speaker] ✓ Found list with " + items.length + " participant items!");
+            peopleList = allLists[k];
+            break;
+          }
+        }
+      }
       
       if (!peopleList) {
-        console.error("Could not find participants list element");
+        console.error("[Speaker] ✗ FAILED to find participants list");
+        console.error("[Speaker] This means speaker tracking will NOT work");
         return false;
       }
+      
+      console.log("[Speaker] ✓ Successfully found participants list");
 
-      var initialParticipants = Array.from(peopleList.childNodes).filter(
-        function(node) { return node.nodeType === Node.ELEMENT_NODE; }
-      );
       window.participantArray = [];
-      window.mergedAudioParticipantArray = [];
+      window.speakingState = {};
 
-      // Simple speech observer - any class change triggers speaking event
-      window.observeSpeech = function(node, participant) {
-        console.log("Observing speech for participant:", participant.name);
+      // TESTED AND VERIFIED GENERIC DETECTION:
+      // The speaking indicator is a div with exactly 3 EMPTY child divs (audio wave bars)
+      // When speaking: display = "flex", When silent: display = "none"
+      // This is fully generic - no class names used
+      function findSpeakingIndicator(participantNode) {
+        var allDivs = participantNode.querySelectorAll('div');
+        for (var i = 0; i < allDivs.length; i++) {
+          var div = allDivs[i];
+          var children = div.children;
+          if (children.length === 3) {
+            // Check if all 3 children are empty divs
+            var allEmptyDivs = true;
+            for (var j = 0; j < children.length; j++) {
+              if (children[j].tagName !== 'DIV' || children[j].textContent.trim() !== '') {
+                allEmptyDivs = false;
+                break;
+              }
+            }
+            if (allEmptyDivs) {
+              return div;
+            }
+          }
+        }
+        return null;
+      }
+      
+      function isSpeakingIndicatorActive(participantNode) {
+        var indicator = findSpeakingIndicator(participantNode);
+        if (!indicator) return false;
+        var style = window.getComputedStyle(indicator);
+        // Speaking when display is NOT "none" (i.e., "flex" or "block")
+        return style.display !== 'none';
+      }
+
+      // Speech observer with debouncing
+      window.observeSpeech = function(participantNode, participant) {
+        console.log("[Speaker] Setting up observer for:", participant.name);
+        
+        // Initialize state
+        window.speakingState[participant.id] = { 
+          isSpeaking: false, 
+          lastUpdate: 0,
+          debounceMs: 300
+        };
+        
         var activityObserver = new MutationObserver(function(mutations) {
-          mutations.forEach(function() {
+          var now = Date.now();
+          var state = window.speakingState[participant.id];
+          if (!state) return;
+          
+          // Debounce
+          if (now - state.lastUpdate < state.debounceMs) return;
+          
+          var speaking = isSpeakingIndicatorActive(participantNode);
+          
+          if (speaking && !state.isSpeaking) {
+            state.isSpeaking = true;
+            state.lastUpdate = now;
+            console.log("[Speaker] Started:", participant.name);
             window.registerParticipantSpeaking(participant);
-          });
+          } else if (speaking && state.isSpeaking) {
+            state.lastUpdate = now;
+            window.registerParticipantSpeaking(participant);
+          } else if (!speaking && state.isSpeaking) {
+            state.isSpeaking = false;
+            console.log("[Speaker] Stopped:", participant.name);
+          }
         });
-        activityObserver.observe(node, {
+        
+        // Watch entire participant node for changes
+        activityObserver.observe(participantNode, {
           attributes: true,
           subtree: true,
           childList: true,
-          attributeFilter: ["class"],
+          attributeFilter: ["class", "style"]
         });
+        
         participant.observer = activityObserver;
       };
 
-      window.handleMergedAudio = function() {
-        var mergedAudioNode = document.querySelector('[aria-label="Merged audio"]');
-        if (mergedAudioNode && mergedAudioNode.parentNode) {
-          var detectedParticipants = [];
+      // Polling fallback every 300ms - very reliable
+      setInterval(function() {
+        if (!window.participantArray || window.participantArray.length === 0) return;
+        
+        for (var i = 0; i < window.participantArray.length; i++) {
+          var participant = window.participantArray[i];
+          var state = window.speakingState[participant.id];
+          if (!state) continue;
           
-          var childNodes = mergedAudioNode.parentNode.childNodes;
-          for (var i = 0; i < childNodes.length; i++) {
-            var childNode = childNodes[i];
-            if (!childNode.getAttribute) continue;
-            var participantId = childNode.getAttribute("data-participant-id");
-            if (!participantId) continue;
-            detectedParticipants.push({
-              id: participantId,
-              name: childNode.getAttribute("aria-label"),
-            });
-          }
-
-          if (detectedParticipants.length > window.mergedAudioParticipantArray.length) {
-            var filteredParticipants = detectedParticipants.filter(function(participant) {
-              return !window.mergedAudioParticipantArray.find(function(p) { return p.id === participant.id; });
-            });
-            for (var j = 0; j < filteredParticipants.length; j++) {
-              var participant = filteredParticipants[j];
-              var vidBlock = document.querySelector('[data-requested-participant-id="' + participant.id + '"]');
-              window.mergedAudioParticipantArray.push(participant);
-              window.onParticipantJoin(participant);
-              window.observeSpeech(vidBlock, participant);
-              window.participantArray.push(participant);
-            }
-          } else if (detectedParticipants.length < window.mergedAudioParticipantArray.length) {
-            var leftParticipants = window.mergedAudioParticipantArray.filter(function(participant) {
-              return !detectedParticipants.find(function(p) { return p.id === participant.id; });
-            });
-            for (var k = 0; k < leftParticipants.length; k++) {
-              var leftParticipant = leftParticipants[k];
-              var videoRectangle = document.querySelector('[data-requested-participant-id="' + leftParticipant.id + '"]');
-              if (!videoRectangle) {
-                window.onParticipantLeave(leftParticipant);
-                window.participantArray = window.participantArray.filter(function(p) { return p.id !== leftParticipant.id; });
-              }
-              window.mergedAudioParticipantArray = window.mergedAudioParticipantArray.filter(function(p) { return p.id !== leftParticipant.id; });
-            }
+          var now = Date.now();
+          if (now - state.lastUpdate < state.debounceMs) continue;
+          
+          var participantNode = document.querySelector('[role="listitem"][data-participant-id="' + participant.id + '"]');
+          if (!participantNode) continue;
+          
+          var speaking = isSpeakingIndicatorActive(participantNode);
+          
+          if (speaking && !state.isSpeaking) {
+            state.isSpeaking = true;
+            state.lastUpdate = now;
+            console.log("[Speaker] Poll: Started -", participant.name);
+            window.registerParticipantSpeaking(participant);
+          } else if (speaking && state.isSpeaking) {
+            state.lastUpdate = now;
+            window.registerParticipantSpeaking(participant);
+          } else if (!speaking && state.isSpeaking) {
+            state.isSpeaking = false;
+            console.log("[Speaker] Poll: Stopped -", participant.name);
           }
         }
-      };
+      }, 300);
+
+      // Get all participant items
+      var participantItems = peopleList.querySelectorAll('[role="listitem"][data-participant-id]');
+      console.log("[Speaker] Found " + participantItems.length + " participants");
 
       // Process initial participants
-      for (var initIdx = 0; initIdx < initialParticipants.length; initIdx++) {
-        var node = initialParticipants[initIdx];
+      for (var idx = 0; idx < participantItems.length; idx++) {
+        var node = participantItems[idx];
+        var participantId = node.getAttribute("data-participant-id");
+        var participantName = node.getAttribute("aria-label");
+        
+        if (!participantId || !participantName) continue;
+        if (participantName.toLowerCase() === "merged audio") continue;
+        
         var participant = {
-          id: node.getAttribute ? node.getAttribute("data-participant-id") : null,
-          name: node.getAttribute ? node.getAttribute("aria-label") : null,
+          id: participantId,
+          name: participantName
         };
-        if (!participant.id) {
-          window.handleMergedAudio();
-          continue;
-        }
+        
+        console.log("[Speaker] Tracking:", participantName);
         window.onParticipantJoin(participant);
         window.observeSpeech(node, participant);
         window.participantArray.push(participant);
       }
 
-      console.log("Setting up mutation observer on participants list");
+      // Observer for join/leave events
       var peopleObserver = new MutationObserver(function(mutations) {
         for (var mIdx = 0; mIdx < mutations.length; mIdx++) {
           var mutation = mutations[mIdx];
-          if (mutation.type === "childList") {
-            // Handle removed nodes
-            for (var rIdx = 0; rIdx < mutation.removedNodes.length; rIdx++) {
-              var removedNode = mutation.removedNodes[rIdx];
-              console.log("Removed Node", removedNode);
-              if (
-                removedNode.nodeType === Node.ELEMENT_NODE &&
-                removedNode.getAttribute &&
-                removedNode.getAttribute("data-participant-id") &&
-                window.participantArray.find(function(p) { return p.id === removedNode.getAttribute("data-participant-id"); })
-              ) {
-                console.log("Participant left:", removedNode.getAttribute("aria-label"));
-                window.onParticipantLeave({
-                  id: removedNode.getAttribute("data-participant-id"),
-                  name: removedNode.getAttribute("aria-label"),
-                });
-                window.participantArray = window.participantArray.filter(function(p) {
-                  return p.id !== removedNode.getAttribute("data-participant-id");
-                });
-              } else if (document.querySelector('[aria-label="Merged audio"]')) {
-                window.handleMergedAudio();
-              }
-            }
+          
+          // Handle added nodes
+          for (var aIdx = 0; aIdx < mutation.addedNodes.length; aIdx++) {
+            var addedNode = mutation.addedNodes[aIdx];
+            if (!addedNode.getAttribute) continue;
             
-            // Handle added nodes
-            for (var aIdx = 0; aIdx < mutation.addedNodes.length; aIdx++) {
-              var addedNode = mutation.addedNodes[aIdx];
-              console.log("Added Node", addedNode);
-              if (
-                addedNode.getAttribute &&
-                addedNode.getAttribute("data-participant-id") &&
-                !window.participantArray.find(function(p) { return p.id === addedNode.getAttribute("data-participant-id"); })
-              ) {
-                console.log("Participant joined:", addedNode.getAttribute("aria-label"));
-                var newParticipant = {
-                  id: addedNode.getAttribute("data-participant-id"),
-                  name: addedNode.getAttribute("aria-label"),
-                };
+            var participantId = addedNode.getAttribute("data-participant-id");
+            var participantName = addedNode.getAttribute("aria-label");
+            
+            if (participantId && participantName && participantName.toLowerCase() !== "merged audio") {
+              var exists = window.participantArray.find(function(p) { return p.id === participantId; });
+              if (!exists) {
+                console.log("[Speaker] Joined:", participantName);
+                var newParticipant = { id: participantId, name: participantName };
                 window.onParticipantJoin(newParticipant);
                 window.observeSpeech(addedNode, newParticipant);
                 window.participantArray.push(newParticipant);
-              } else if (document.querySelector('[aria-label="Merged audio"]')) {
-                window.handleMergedAudio();
+              }
+            }
+          }
+          
+          // Handle removed nodes
+          for (var rIdx = 0; rIdx < mutation.removedNodes.length; rIdx++) {
+            var removedNode = mutation.removedNodes[rIdx];
+            if (!removedNode.getAttribute) continue;
+            
+            var removedId = removedNode.getAttribute("data-participant-id");
+            if (removedId) {
+              var existing = window.participantArray.find(function(p) { return p.id === removedId; });
+              if (existing) {
+                console.log("[Speaker] Left:", existing.name);
+                window.onParticipantLeave({ id: removedId, name: existing.name });
+                window.participantArray = window.participantArray.filter(function(p) { return p.id !== removedId; });
+                delete window.speakingState[removedId];
               }
             }
           }
@@ -1009,8 +1247,11 @@ export class MeetsBot extends Bot {
       });
 
       peopleObserver.observe(peopleList, { childList: true, subtree: true });
+      
+      console.log("[Speaker] ✓ Initialized with " + window.participantArray.length + " participants");
       return true;
-    });
+    })()`);
+
 
     if (!participantsListFound) {
       console.error("⚠️ FAILED TO SET UP PARTICIPANT TRACKING");
@@ -1023,21 +1264,22 @@ export class MeetsBot extends Bot {
     // Google Meet sometimes closes the panel, which breaks speaker detection
     this.keepPanelOpenInterval = setInterval(async () => {
       try {
-        const panelOpen = await this.page.evaluate(() => {
+        const panelOpen = await this.page.evaluate(`(function() {
           // Check if participants list is visible
-          const selectors = [
+          var selectors = [
             '[role="list"][aria-label="Participants"]',
             '[aria-label="Participants"]',
             '[jsname="jrQDbd"]'
           ];
-          for (const selector of selectors) {
-            const el = document.querySelector(selector);
-            if (el && (el as HTMLElement).offsetParent !== null) {
+          for (var i = 0; i < selectors.length; i++) {
+            var selector = selectors[i];
+            var el = document.querySelector(selector);
+            if (el && el.offsetParent !== null) {
               return true;
             }
           }
           return false;
-        });
+        })()`);
         
         if (!panelOpen) {
           console.log('[DOM] Participants panel closed, attempting to reopen...');
@@ -1056,19 +1298,19 @@ export class MeetsBot extends Bot {
           // Strategy 2: Find by icon
           if (!reopened) {
             try {
-              await this.page.evaluate(() => {
-                const peopleIcon = Array.from(document.querySelectorAll('i')).find(
-                  el => el.textContent?.trim() === 'people'
+              await this.page.evaluate(`(function() {
+                var peopleIcon = Array.from(document.querySelectorAll('i')).find(
+                  function(el) { return el.textContent && el.textContent.trim() === 'people'; }
                 );
                 if (peopleIcon) {
-                  const button = peopleIcon.closest('button');
+                  var button = peopleIcon.closest('button');
                   if (button) {
                     button.click();
                     return true;
                   }
                 }
                 return false;
-              });
+              })()`);
             } catch (e) {
               // Failed to reopen
             }

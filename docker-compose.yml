@@ -39,6 +39,9 @@ services:
       context: ./src/server
       dockerfile: Dockerfile.local
     container_name: meetingbot_server
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://postgres:password@postgres:5432/meetingbot

@@ -20,6 +20,64 @@ import {
 
 const ASSEMBLYAI_API_URL = "https://api.assemblyai.com/v2";
 
+// Retry configuration for transient network errors
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 1000;
+
+/**
+ * Check if an error is a transient network error that should be retried
+ */
+function isTransientError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const cause = (error as Error & { cause?: Error }).cause;
+    const errorCode = (cause as Error & { code?: string })?.code;
+    
+    // DNS resolution failures
+    if (errorCode === 'EAI_AGAIN' || errorCode === 'EAI_NODATA' || errorCode === 'EAI_NONAME') {
+      return true;
+    }
+    // Connection reset/timeout errors
+    if (errorCode === 'ECONNRESET' || errorCode === 'ETIMEDOUT' || errorCode === 'ECONNREFUSED') {
+      return true;
+    }
+    // Undici timeout errors
+    if (errorCode === 'UND_ERR_HEADERS_TIMEOUT' || errorCode === 'UND_ERR_CONNECT_TIMEOUT') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Retry a function with exponential backoff for transient errors
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  operationName: string,
+  maxRetries = MAX_RETRIES
+): Promise<T> {
+  let lastError: Error = new Error("Retry failed with no attempts");
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      
+      if (attempt < maxRetries && isTransientError(error)) {
+        const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+        console.log(`AssemblyAI: ${operationName} failed with transient error, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+        console.log(`AssemblyAI: Error details:`, lastError.message);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw lastError;
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
 /**
  * Normalizes speaker timeframes to ensure they're in seconds.
  * Bot recordings store timeframes in milliseconds, but AssemblyAI segments are in seconds.
@@ -258,26 +316,49 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
       throw new TranscriptionError("AssemblyAI API key not configured", "assemblyai", "NO_API_KEY");
     }
 
-    const response = await fetch(`${ASSEMBLYAI_API_URL}/upload`, {
-      method: "POST",
-      headers: {
-        Authorization: apiKey,
-        "Content-Type": "application/octet-stream",
-      },
-      body: audioBuffer,
-    });
+    // Wrap the upload in retry logic for transient network errors
+    return withRetry(async () => {
+      // Use a longer timeout for large file uploads (10 minutes)
+      // This prevents UND_ERR_HEADERS_TIMEOUT errors for large audio files
+      const controller = new AbortController();
+      const timeoutMs = 10 * 60 * 1000; // 10 minutes
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new TranscriptionError(
-        `Failed to upload audio: ${response.status} - ${errorText}`,
-        "assemblyai",
-        `UPLOAD_HTTP_${response.status}`
-      );
-    }
+      try {
+        const response = await fetch(`${ASSEMBLYAI_API_URL}/upload`, {
+          method: "POST",
+          headers: {
+            Authorization: apiKey,
+            "Content-Type": "application/octet-stream",
+          },
+          body: new Uint8Array(audioBuffer),
+          signal: controller.signal,
+        });
 
-    const data: unknown = await response.json();
-    return (data as { upload_url: string }).upload_url;
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new TranscriptionError(
+            `Failed to upload audio: ${response.status} - ${errorText}`,
+            "assemblyai",
+            `UPLOAD_HTTP_${response.status}`
+          );
+        }
+
+        const data: unknown = await response.json();
+        return (data as { upload_url: string }).upload_url;
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') {
+          throw new TranscriptionError(
+            `Audio upload timed out after ${timeoutMs / 1000} seconds`,
+            "assemblyai",
+            "UPLOAD_TIMEOUT"
+          );
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }, "Upload audio");
   }
 
   private async startTranscription(

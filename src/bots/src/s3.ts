@@ -1,8 +1,9 @@
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { PutObjectCommand, S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { readFileSync, promises as fsPromises } from "fs";
 import { spawn } from "child_process";
 import { Bot } from "./bot";
 import { randomUUID } from "crypto";
+import { Readable } from "stream";
 
 /**
  * Result of uploading a recording to S3
@@ -91,12 +92,17 @@ async function extractAudioFromVideo(videoBuffer: Buffer): Promise<Buffer> {
             if (code === 0) {
                 const audioBuffer = Buffer.concat(chunks);
                 console.log("Audio extraction completed successfully");
-                console.log(`FFmpeg stderr output: ${stderrOutput.slice(-1000)}`);
                 
-                // Check if audio buffer is suspiciously small (likely empty)
-                if (audioBuffer.length < 1000) {
-                    console.warn(`WARNING: Audio buffer is very small (${audioBuffer.length} bytes) - video may not contain audio track`);
-                    console.warn("This usually means the video was recorded without audio or PulseAudio failed to capture audio");
+                // Log last part of stderr for debugging
+                const stderrLines = stderrOutput.split('\n');
+                const relevantLines = stderrLines.filter(line => 
+                    line.includes('Audio:') || 
+                    line.includes('Stream #') || 
+                    line.includes('Duration:') ||
+                    line.includes('size=')
+                );
+                if (relevantLines.length > 0) {
+                    console.log('FFmpeg audio info:', relevantLines.slice(-5).join('\n'));
                 }
                 
                 resolve(audioBuffer);
@@ -119,6 +125,39 @@ async function extractAudioFromVideo(videoBuffer: Buffer): Promise<Buffer> {
         ffmpeg.stdin.write(videoBuffer);
         ffmpeg.stdin.end();
     });
+}
+
+/**
+ * Downloads a video from S3 and extracts audio from it.
+ * This is more reliable than extracting from a buffer during upload.
+ * 
+ * @param s3Client - The S3 client instance
+ * @param videoKey - The S3 key of the video file
+ * @returns Promise resolving to the extracted audio as a Buffer
+ */
+async function extractAudioFromS3Video(s3Client: S3Client, videoKey: string): Promise<Buffer> {
+    console.log("Downloading video from S3 for audio extraction...");
+    
+    const getCommand = new GetObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME!,
+        Key: videoKey,
+    });
+
+    const response = await s3Client.send(getCommand);
+    
+    // Convert the response body stream to a buffer
+    const chunks: Uint8Array[] = [];
+    const stream = response.Body as Readable;
+    
+    for await (const chunk of stream) {
+        chunks.push(chunk);
+    }
+    
+    const videoBuffer = Buffer.concat(chunks);
+    console.log(`Downloaded video from S3, size: ${videoBuffer.length} bytes`);
+    
+    // Now extract audio from the complete video file
+    return await extractAudioFromVideo(videoBuffer);
 }
 
 /**
@@ -202,11 +241,17 @@ export async function uploadRecordingToS3(s3Client: S3Client, bot: Bot): Promise
         return { videoKey: '', audioKey: null };
     }
 
-    // Extract and upload audio
+    // Extract and upload audio - download from S3 first for reliability
     try {
-        console.log("Starting audio extraction from video...");
-        const audioBuffer = await extractAudioFromVideo(fileContent);
+        console.log("Starting audio extraction from S3 video...");
+        const audioBuffer = await extractAudioFromS3Video(s3Client, videoKey);
         console.log(`Audio extracted successfully, size: ${audioBuffer.length} bytes`);
+
+        // Check if audio buffer is suspiciously small (likely empty)
+        if (audioBuffer.length < 1000) {
+            console.warn(`WARNING: Audio buffer is very small (${audioBuffer.length} bytes) - video may not contain audio track`);
+            console.warn("This usually means the video was recorded without audio or PulseAudio failed to capture audio");
+        }
 
         const audioCommandObjects = {
             Bucket: process.env.AWS_BUCKET_NAME!,
