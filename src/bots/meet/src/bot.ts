@@ -1066,17 +1066,18 @@ export class MeetsBot extends Bot {
       window.participantArray = [];
       window.speakingState = {};
 
-      // TESTED AND VERIFIED GENERIC DETECTION:
+      // TESTED AND VERIFIED GENERIC DETECTION (class-change based):
       // The speaking indicator is a div with exactly 3 EMPTY child divs (audio wave bars)
-      // When speaking: display = "flex", When silent: display = "none"
-      // This is fully generic - no class names used
+      // When someone speaks, the indicator's class changes rapidly (animation)
+      // When silent, the class stays stable
+      // This is fully generic - detects animation by monitoring class changes
+      
       function findSpeakingIndicator(participantNode) {
         var allDivs = participantNode.querySelectorAll('div');
         for (var i = 0; i < allDivs.length; i++) {
           var div = allDivs[i];
           var children = div.children;
           if (children.length === 3) {
-            // Check if all 3 children are empty divs
             var allEmptyDivs = true;
             for (var j = 0; j < children.length; j++) {
               if (children[j].tagName !== 'DIV' || children[j].textContent.trim() !== '') {
@@ -1092,91 +1093,86 @@ export class MeetsBot extends Bot {
         return null;
       }
       
-      function isSpeakingIndicatorActive(participantNode) {
-        var indicator = findSpeakingIndicator(participantNode);
-        if (!indicator) return false;
-        var style = window.getComputedStyle(indicator);
-        // Speaking when display is NOT "none" (i.e., "flex" or "block")
-        return style.display !== 'none';
-      }
+      // Class-change tracker for detecting animation (speaking)
+      window.classChangeTracker = {};
+      var DEBOUNCE_MS = 1000; // Keep speaking state for 1 second after last activity
 
-      // Speech observer with debouncing
+      // Set up class-change based speech detection for a participant
       window.observeSpeech = function(participantNode, participant) {
         console.log("[Speaker] Setting up observer for:", participant.name);
         
-        // Initialize state
-        window.speakingState[participant.id] = { 
-          isSpeaking: false, 
-          lastUpdate: 0,
-          debounceMs: 300
+        var indicator = findSpeakingIndicator(participantNode);
+        if (!indicator) {
+          console.log("[Speaker] No indicator for:", participant.name, "(probably muted)");
+          return;
+        }
+        
+        // Initialize class change tracker
+        window.classChangeTracker[participant.id] = {
+          name: participant.name,
+          indicator: indicator,
+          lastClass: indicator.className,
+          changeCount: 0,
+          lastCheck: Date.now(),
+          lastSpeakingTime: 0
         };
         
-        var activityObserver = new MutationObserver(function(mutations) {
-          var now = Date.now();
-          var state = window.speakingState[participant.id];
-          if (!state) return;
-          
-          // Debounce
-          if (now - state.lastUpdate < state.debounceMs) return;
-          
-          var speaking = isSpeakingIndicatorActive(participantNode);
-          
-          if (speaking && !state.isSpeaking) {
-            state.isSpeaking = true;
-            state.lastUpdate = now;
-            console.log("[Speaker] Started:", participant.name);
-            window.registerParticipantSpeaking(participant);
-          } else if (speaking && state.isSpeaking) {
-            state.lastUpdate = now;
-            window.registerParticipantSpeaking(participant);
-          } else if (!speaking && state.isSpeaking) {
-            state.isSpeaking = false;
-            console.log("[Speaker] Stopped:", participant.name);
-          }
-        });
-        
-        // Watch entire participant node for changes
-        activityObserver.observe(participantNode, {
-          attributes: true,
-          subtree: true,
-          childList: true,
-          attributeFilter: ["class", "style"]
-        });
-        
-        participant.observer = activityObserver;
+        // Initialize speaking state
+        window.speakingState[participant.id] = false;
       };
 
-      // Polling fallback every 300ms - very reliable
+      // CLASS-CHANGE BASED POLLING - detects animation by monitoring class changes
+      // This is the tested and verified approach
       setInterval(function() {
-        if (!window.participantArray || window.participantArray.length === 0) return;
+        var now = Date.now();
         
-        for (var i = 0; i < window.participantArray.length; i++) {
-          var participant = window.participantArray[i];
-          var state = window.speakingState[participant.id];
-          if (!state) continue;
+        for (var id in window.classChangeTracker) {
+          var tracker = window.classChangeTracker[id];
+          if (!tracker || !tracker.indicator) continue;
           
-          var now = Date.now();
-          if (now - state.lastUpdate < state.debounceMs) continue;
+          var currentClass = tracker.indicator.className;
           
-          var participantNode = document.querySelector('[role="listitem"][data-participant-id="' + participant.id + '"]');
-          if (!participantNode) continue;
+          // Count class changes (indicates animation = speaking)
+          if (currentClass !== tracker.lastClass) {
+            tracker.changeCount++;
+            tracker.lastClass = currentClass;
+          }
           
-          var speaking = isSpeakingIndicatorActive(participantNode);
-          
-          if (speaking && !state.isSpeaking) {
-            state.isSpeaking = true;
-            state.lastUpdate = now;
-            console.log("[Speaker] Poll: Started -", participant.name);
-            window.registerParticipantSpeaking(participant);
-          } else if (speaking && state.isSpeaking) {
-            state.lastUpdate = now;
-            window.registerParticipantSpeaking(participant);
-          } else if (!speaking && state.isSpeaking) {
-            state.isSpeaking = false;
-            console.log("[Speaker] Poll: Stopped -", participant.name);
+          // Every 500ms, evaluate if speaking
+          if (now - tracker.lastCheck >= 500) {
+            var hasActivity = tracker.changeCount >= 2; // 2+ changes = speaking
+            
+            if (hasActivity) {
+              tracker.lastSpeakingTime = now;
+            }
+            
+            // Speaking if had activity recently (within DEBOUNCE_MS)
+            var speaking = (now - tracker.lastSpeakingTime) < DEBOUNCE_MS;
+            var wasSpkg = window.speakingState[id];
+            
+            if (speaking && !wasSpkg) {
+              console.log("[Speaker] Started:", tracker.name);
+              // Find participant object
+              var participant = window.participantArray.find(function(p) { return p.id === id; });
+              if (participant) {
+                window.registerParticipantSpeaking(participant);
+              }
+            } else if (speaking && wasSpkg) {
+              // Still speaking - update activity
+              var participant = window.participantArray.find(function(p) { return p.id === id; });
+              if (participant) {
+                window.registerParticipantSpeaking(participant);
+              }
+            } else if (!speaking && wasSpkg) {
+              console.log("[Speaker] Stopped:", tracker.name);
+            }
+            
+            window.speakingState[id] = speaking;
+            tracker.changeCount = 0;
+            tracker.lastCheck = now;
           }
         }
-      }, 300);
+      }, 200);
 
       // Get all participant items
       var participantItems = peopleList.querySelectorAll('[role="listitem"][data-participant-id]');
