@@ -1,8 +1,7 @@
 "use client";
 
 import DashboardCard from "./DashboardCard";
-import CommunityCard from "./CommunityCard";
-import { Bot, File, Key } from "lucide-react";
+import { Bot, Key } from "lucide-react";
 import { UsageChart } from "../usage/components/UsageChart";
 import { api } from "~/trpc/react";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -37,7 +36,7 @@ export default function Dashboard() {
         </p>
       </div>
       <div>
-        <div className="grid grid-cols-1 gap-6 lg:h-[48rem] lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <DashboardCard
             title="Active Bots"
             className="h-full min-h-56"
@@ -82,21 +81,7 @@ export default function Dashboard() {
               text: "View Keys",
             }}
           />
-          <DashboardCard
-            title="View our Docs"
-            className="h-full min-h-56"
-            content="To learn more about how to create bots, pull meeting recordings, pull transcriptions and more, view our Documentation!"
-            icon={<File className="text-slate-500" />}
-            link={{
-              type: "INTERNAL",
-              url: "/docs",
-              text: "View Documentation",
-            }}
-          />
-          <div className="h-[30rem] min-h-0 lg:row-span-2 lg:h-full">
-            <CommunityCard className="h-full" />
-          </div>
-          <div className="h-[30rem] lg:col-span-2 lg:row-span-2 lg:min-h-0">
+          <div className="h-[30rem] lg:col-span-2 lg:min-h-0">
             <DashboardCard
               title="Your Recent Usage"
               className="h-full"

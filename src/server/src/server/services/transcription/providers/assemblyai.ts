@@ -21,8 +21,8 @@ import {
 const ASSEMBLYAI_API_URL = "https://api.assemblyai.com/v2";
 
 // Retry configuration for transient network errors
-const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 1000;
+const MAX_RETRIES = 5;
+const INITIAL_RETRY_DELAY_MS = 2000;
 
 /**
  * Check if an error is a transient network error that should be retried
@@ -85,13 +85,15 @@ async function withRetry<T>(
 function normalizeTimeframesToSeconds(timeframes: SpeakerTimeframe[]): SpeakerTimeframe[] {
   if (!timeframes.length) return timeframes;
   
-  // Heuristic: if start times are > 100000, they're likely in milliseconds
-  // (100000 seconds = ~27 hours, which is unlikely for a meeting)
-  const firstStart = timeframes[0]?.start ?? 0;
-  const needsConversion = firstStart > 100000;
+  // Heuristic: if end times are > 1000, they're likely in milliseconds
+  // A typical meeting segment would end at most a few hundred seconds (a few minutes)
+  // If end time is > 1000, it's almost certainly in milliseconds (1000ms = 1 second)
+  // We use the first end time as the indicator since end times are larger and more reliable
+  const firstEnd = timeframes[0]?.end ?? 0;
+  const needsConversion = firstEnd > 1000;
   
   if (needsConversion) {
-    console.log(`AssemblyAI: Converting speaker timeframes from ms to seconds`);
+    console.log(`AssemblyAI: Converting speaker timeframes from ms to seconds (first end: ${firstEnd}ms)`);
     return timeframes.map(tf => ({
       speakerName: tf.speakerName,
       start: tf.start / 1000,
@@ -99,6 +101,7 @@ function normalizeTimeframesToSeconds(timeframes: SpeakerTimeframe[]): SpeakerTi
     }));
   }
   
+  console.log(`AssemblyAI: Timeframes appear to already be in seconds (first end: ${firstEnd}s)`);
   return timeframes;
 }
 
@@ -434,26 +437,29 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
 
     console.log(`AssemblyAI: Request body:`, JSON.stringify(requestBody, null, 2));
 
-    const response = await fetch(`${ASSEMBLYAI_API_URL}/transcript`, {
-      method: "POST",
-      headers: {
-        Authorization: apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
+    // Wrap in retry logic for transient network errors
+    return withRetry(async () => {
+      const response = await fetch(`${ASSEMBLYAI_API_URL}/transcript`, {
+        method: "POST",
+        headers: {
+          Authorization: apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new TranscriptionError(
-        `Failed to start transcription: ${response.status} - ${errorText}`,
-        "assemblyai",
-        `TRANSCRIBE_HTTP_${response.status}`
-      );
-    }
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new TranscriptionError(
+          `Failed to start transcription: ${response.status} - ${errorText}`,
+          "assemblyai",
+          `TRANSCRIBE_HTTP_${response.status}`
+        );
+      }
 
-    const data: unknown = await response.json();
-    return (data as { id: string }).id;
+      const data: unknown = await response.json();
+      return (data as { id: string }).id;
+    }, "Start transcription");
   }
 
   private async pollForCompletion(
@@ -469,24 +475,28 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
     }
 
     while (attempts < maxAttempts) {
-      const response = await fetch(
-        `${ASSEMBLYAI_API_URL}/transcript/${transcriptId}`,
-        {
-          headers: {
-            Authorization: apiKey,
-          },
-        }
-      );
-
-      if (!response.ok) {
-        throw new TranscriptionError(
-          `Failed to check transcription status: ${response.status}`,
-          "assemblyai",
-          `POLL_HTTP_${response.status}`
+      // Wrap each poll request in retry logic for transient network errors
+      const data = await withRetry(async () => {
+        const response = await fetch(
+          `${ASSEMBLYAI_API_URL}/transcript/${transcriptId}`,
+          {
+            headers: {
+              Authorization: apiKey,
+            },
+          }
         );
-      }
 
-      const data: unknown = await response.json();
+        if (!response.ok) {
+          throw new TranscriptionError(
+            `Failed to check transcription status: ${response.status}`,
+            "assemblyai",
+            `POLL_HTTP_${response.status}`
+          );
+        }
+
+        return await response.json() as unknown;
+      }, "Poll transcription status");
+      
       const statusData = data as { status: string; error?: string };
 
       if (statusData.status === "completed") {

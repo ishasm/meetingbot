@@ -32,8 +32,8 @@ export interface UsageChartProps {
 export function UsageChart() {
   // Get Metric
   const [metric, setMetric] = React.useState<
-    "count" | "msEllapsed" | "estimatedCost"
-  >("estimatedCost");
+    "count" | "msEllapsed"
+  >("count");
   const [timeframe, setTimeframe] = React.useState<"week" | "month" | "year">(
     "week",
   );
@@ -122,12 +122,6 @@ export function UsageChart() {
         <div className="align-center flex flex-col justify-center">
           <div className="pb-2 font-semibold">Metric</div>
           <div className="flex gap-2">
-            <Button
-              variant={metric === "estimatedCost" ? "default" : "outline"}
-              onClick={() => setMetric("estimatedCost")}
-            >
-              Estimated Costs
-            </Button>
             <Button
               variant={metric === "count" ? "default" : "outline"}
               onClick={() => setMetric("count")}
