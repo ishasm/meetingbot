@@ -562,32 +562,48 @@ export class AssemblyAIProvider implements ITranscriptionProvider {
       }));
     }
 
-    // Check if Speaker Identification already provided real names
-    // Real names are typically more than 1 character (vs "A", "B", "C")
-    const hasRealSpeakerNames = segments.some(seg => 
-      seg.speaker && seg.speaker.length > 1 && !/^Speaker [A-Z]$/.test(seg.speaker)
-    );
+    // Get unique speakers from AssemblyAI response
+    const assemblyAISpeakers = [...new Set(segments.map(s => s.speaker).filter(Boolean))];
+    console.log(`AssemblyAI: Speakers from transcription:`, assemblyAISpeakers);
+
+    // Get our known speakers from timeframes
+    const knownSpeakers = speakerTimeframes?.length ? getUniqueSpeakers(speakerTimeframes) : [];
+    
+    // Check if AssemblyAI's speakers match our known speakers
+    // AssemblyAI sometimes returns names from audio content (e.g., "Ramana Maharshi" when someone talks about that person)
+    // We should use our timeframes to correct this
+    const speakersMatchKnown = assemblyAISpeakers.length > 0 && 
+      assemblyAISpeakers.every(speaker => 
+        knownSpeakers.some(known => 
+          known.toLowerCase() === speaker?.toLowerCase() || 
+          speaker === 'A' || speaker === 'B' || speaker === 'C' // Generic labels are fine to remap
+        )
+      );
 
     // Map speaker labels to actual names if we have speaker timeframes
-    // Only do manual mapping if Speaker Identification didn't work
+    // ALWAYS use our timeframes for mapping when available - AssemblyAI's Speaker Identification
+    // can return wrong names based on audio content (e.g., names mentioned in speech)
     let speakerMap: Record<string, string> = {};
-    if (!hasRealSpeakerNames && speakerTimeframes?.length && segments.length) {
-      console.log(`AssemblyAI: Speaker Identification not used or didn't return names, falling back to manual mapping`);
-      console.log(`AssemblyAI: Mapping ${segments.length} segments to ${getUniqueSpeakers(speakerTimeframes).length} known speakers`);
-      
-      const mapped = mapSpeakersToNames(segments, words, speakerTimeframes);
-      segments = mapped.segments;
-      words = mapped.words ?? words;
-      speakerMap = mapped.speakerMap;
+    if (speakerTimeframes?.length && segments.length) {
+      if (speakersMatchKnown) {
+        console.log(`AssemblyAI: Speaker names already match known speakers, no remapping needed`);
+      } else {
+        console.log(`AssemblyAI: Speakers don't match known speakers, using timeframe-based mapping`);
+        console.log(`AssemblyAI: Known speakers from bot: ${knownSpeakers.join(", ")}`);
+        console.log(`AssemblyAI: AssemblyAI returned: ${assemblyAISpeakers.join(", ")}`);
+        console.log(`AssemblyAI: Mapping ${segments.length} segments to ${knownSpeakers.length} known speakers`);
+        
+        const mapped = mapSpeakersToNames(segments, words, speakerTimeframes);
+        segments = mapped.segments;
+        words = mapped.words ?? words;
+        speakerMap = mapped.speakerMap;
 
-      if (Object.keys(mapped.speakerMap).length > 0) {
-        console.log(`AssemblyAI: Speaker mapping:`, mapped.speakerMap);
+        if (Object.keys(mapped.speakerMap).length > 0) {
+          console.log(`AssemblyAI: Speaker mapping applied:`, mapped.speakerMap);
+        }
       }
-    } else if (hasRealSpeakerNames) {
-      console.log(`AssemblyAI: Speaker Identification returned real names, no manual mapping needed`);
-      // Log the speakers found
-      const uniqueSpeakers = [...new Set(segments.map(s => s.speaker).filter(Boolean))];
-      console.log(`AssemblyAI: Identified speakers:`, uniqueSpeakers);
+    } else if (assemblyAISpeakers.length > 0) {
+      console.log(`AssemblyAI: No speaker timeframes available, using AssemblyAI's speaker labels as-is`);
     }
 
     // Rebuild text with speaker names if we have segments
