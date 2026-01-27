@@ -2,7 +2,7 @@
 
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { formatDistanceToNow, format } from "date-fns";
@@ -10,9 +10,13 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { Button } from "~/components/ui/button";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
 import { api } from "~/trpc/react";
 import { TranscriptViewer } from "../components/TranscriptViewer";
 import { ActionItemsList } from "../components/ActionItemsList";
+import { MeetingAttendees } from "../components/MeetingAttendees";
+import { MeetingAgendaItems } from "../components/MeetingAgendaItems";
 import { 
   ArrowLeft, 
   Video, 
@@ -21,10 +25,15 @@ import {
   CheckCircle,
   Loader2,
   AlertCircle,
+  Play,
+  Edit2,
+  ExternalLink,
+  Save,
+  X,
 } from "lucide-react";
 
 const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline"; icon: React.ReactNode }> = {
-  READY_TO_DEPLOY: { label: "Preparing", variant: "secondary", icon: <Clock className="h-4 w-4" /> },
+  READY_TO_DEPLOY: { label: "Scheduled", variant: "outline", icon: <Clock className="h-4 w-4" /> },
   DEPLOYING: { label: "Deploying", variant: "secondary", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
   JOINING_CALL: { label: "Joining", variant: "secondary", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
   IN_WAITING_ROOM: { label: "In Waiting Room", variant: "outline", icon: <Clock className="h-4 w-4" /> },
@@ -53,20 +62,50 @@ export default function MeetingDetailPage() {
     }
   }, [authStatus, router, id]);
 
+  const utils = api.useUtils();
+  
   const { data: bot, isLoading, error } = api.bots.getBot.useQuery(
     { id },
     { 
       enabled: !!session && !isNaN(id),
       refetchInterval: (query) => {
-        // Only refetch if bot is still in progress
+        // Only refetch if bot is still in progress (not READY_TO_DEPLOY, DONE, or FATAL)
         const status = query.state.data?.status;
-        if (status && ["DONE", "FATAL"].includes(status)) {
+        if (status && ["READY_TO_DEPLOY", "DONE", "FATAL"].includes(status)) {
           return false;
         }
         return 5000; // Refetch every 5 seconds for active bots
       },
     }
   );
+
+  // Join meeting mutation
+  const joinMeetingMutation = api.bots.joinMeeting.useMutation({
+    onSuccess: () => {
+      void utils.bots.getBot.invalidate({ id });
+    },
+  });
+
+  // Update meeting mutation
+  const updateMeetingMutation = api.bots.updateMeeting.useMutation({
+    onSuccess: () => {
+      void utils.bots.getBot.invalidate({ id });
+      setIsEditing(false);
+    },
+  });
+
+  // Edit state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editUrl, setEditUrl] = useState("");
+
+  // Initialize edit fields when bot data loads
+  useEffect(() => {
+    if (bot) {
+      setEditTitle(bot.meetingTitle);
+      setEditUrl(bot.meetingInfo?.meetingUrl ?? "");
+    }
+  }, [bot]);
 
   // Use proxy endpoints for media files (works with internal MinIO)
   const recordingUrl = bot?.recording ? `/api/bots/${id}/recording` : null;
@@ -76,6 +115,26 @@ export default function MeetingDetailPage() {
     { id },
     { enabled: !!session && !isNaN(id) }
   );
+
+  const handleJoinMeeting = () => {
+    joinMeetingMutation.mutate({ id });
+  };
+
+  const handleSaveEdit = () => {
+    updateMeetingMutation.mutate({
+      id,
+      meetingTitle: editTitle,
+      meetingUrl: editUrl,
+    });
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    if (bot) {
+      setEditTitle(bot.meetingTitle);
+      setEditUrl(bot.meetingInfo?.meetingUrl ?? "");
+    }
+  };
 
   if (authStatus === "loading" || isLoading) {
     return (
@@ -130,8 +189,13 @@ export default function MeetingDetailPage() {
   };
 
   const platform = bot.meetingInfo?.platform;
+  const meetingUrl = bot.meetingInfo?.meetingUrl;
   const hasRecording = !!bot.recording;
   const hasTranscription = !!transcriptionData?.transcription;
+  const isGC = session?.user?.role === "gc";
+  const isReadyToDeploy = bot.status === "READY_TO_DEPLOY";
+  const isInProgress = !["READY_TO_DEPLOY", "DONE", "FATAL"].includes(bot.status);
+  const isComplete = bot.status === "DONE";
 
   return (
     <div className="space-y-6 py-6">
@@ -159,25 +223,146 @@ export default function MeetingDetailPage() {
                 />
               )}
               <div>
-                <CardTitle className="text-2xl">{bot.meetingTitle}</CardTitle>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {bot.createdAt && (
-                    <>
-                      Created {formatDistanceToNow(new Date(bot.createdAt), { addSuffix: true })}
-                      {" • "}
-                      {format(new Date(bot.createdAt), "PPP 'at' p")}
-                    </>
-                  )}
-                </p>
+                {isEditing ? (
+                  <div className="space-y-3">
+                    <div>
+                      <Label htmlFor="editTitle">Meeting Title</Label>
+                      <Input
+                        id="editTitle"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="editUrl">Meeting URL</Label>
+                      <Input
+                        id="editUrl"
+                        value={editUrl}
+                        onChange={(e) => setEditUrl(e.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <Button 
+                        size="sm" 
+                        onClick={handleSaveEdit}
+                        disabled={updateMeetingMutation.isPending}
+                      >
+                        {updateMeetingMutation.isPending ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <Save className="h-4 w-4 mr-2" />
+                        )}
+                        Save
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        onClick={handleCancelEdit}
+                        disabled={updateMeetingMutation.isPending}
+                      >
+                        <X className="h-4 w-4 mr-2" />
+                        Cancel
+                      </Button>
+                    </div>
+                    {updateMeetingMutation.error && (
+                      <p className="text-sm text-red-600">{updateMeetingMutation.error.message}</p>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-2xl">{bot.meetingTitle}</CardTitle>
+                      {isReadyToDeploy && (
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => setIsEditing(true)}
+                        >
+                          <Edit2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {isReadyToDeploy && bot.startTime ? (
+                        <>
+                          Scheduled for {format(new Date(bot.startTime), "PPP")}
+                        </>
+                      ) : bot.createdAt ? (
+                        <>
+                          Created {formatDistanceToNow(new Date(bot.createdAt), { addSuffix: true })}
+                          {" • "}
+                          {format(new Date(bot.createdAt), "PPP 'at' p")}
+                        </>
+                      ) : null}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
-            <Badge variant={status.variant} className="flex items-center gap-1 text-sm">
-              {status.icon}
-              {status.label}
-            </Badge>
+            {!isEditing && (
+              <Badge variant={status.variant} className="flex items-center gap-1 text-sm">
+                {status.icon}
+                {status.label}
+              </Badge>
+            )}
           </div>
         </CardHeader>
         <CardContent>
+          {/* Meeting URL display */}
+          {meetingUrl && !isEditing && (
+            <div className="mb-4 p-3 bg-muted rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Meeting URL:</span>
+                  <a 
+                    href={meetingUrl} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline flex items-center gap-1"
+                  >
+                    {meetingUrl}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* READY_TO_DEPLOY: Show Join Meeting button */}
+          {isReadyToDeploy && !isEditing && (
+            <div className="mb-4">
+              <div className="p-6 border-2 border-dashed border-primary/30 rounded-lg bg-primary/5 text-center">
+                <h3 className="text-lg font-semibold mb-2">Ready to Record</h3>
+                <p className="text-muted-foreground mb-4">
+                  Click the button below to deploy the bot and start recording this meeting.
+                </p>
+                <Button 
+                  size="lg" 
+                  onClick={handleJoinMeeting}
+                  disabled={joinMeetingMutation.isPending}
+                  className="min-w-48"
+                >
+                  {joinMeetingMutation.isPending ? (
+                    <>
+                      <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                      Deploying Bot...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-5 w-5 mr-2" />
+                      Join Meeting & Start Recording
+                    </>
+                  )}
+                </Button>
+                {joinMeetingMutation.error && (
+                  <p className="text-sm text-red-600 mt-2">{joinMeetingMutation.error.message}</p>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-4">
             {/* Recording Download */}
             {hasRecording && recordingUrl && (
@@ -220,7 +405,7 @@ export default function MeetingDetailPage() {
           )}
 
           {/* Status message for in-progress meetings */}
-          {!["DONE", "FATAL"].includes(bot.status) && (
+          {isInProgress && (
             <div className="mt-4 p-4 bg-blue-50 rounded-lg">
               <div className="flex items-center gap-2 text-blue-700">
                 <Loader2 className="h-5 w-5 animate-spin" />
@@ -245,13 +430,23 @@ export default function MeetingDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Transcript Section */}
-      {bot.status === "DONE" && (
+      {/* GC-Only: Meeting Attendees Section - Show for all statuses */}
+      {isGC && (
+        <MeetingAttendees botId={id} />
+      )}
+
+      {/* GC-Only: Agenda Items Section - Show for all statuses */}
+      {isGC && (
+        <MeetingAgendaItems botId={id} hasTranscription={hasTranscription} />
+      )}
+
+      {/* Transcript Section - Only for completed meetings */}
+      {isComplete && (
         <TranscriptViewer botId={id} hasRecording={hasRecording} />
       )}
 
-      {/* Action Items Section */}
-      {bot.status === "DONE" && (
+      {/* Action Items Section - Only for completed meetings */}
+      {isComplete && (
         <ActionItemsList botId={id} hasTranscription={hasTranscription} />
       )}
     </div>

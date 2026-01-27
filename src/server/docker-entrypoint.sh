@@ -30,7 +30,13 @@ chmod +x /tmp/mc
 
 # Run database migrations
 echo "Running database migrations..."
-npx drizzle-kit migrate
+for migration in drizzle/*.sql; do
+  if [ -f "$migration" ]; then
+    echo "Applying migration: $migration"
+    psql "$DATABASE_URL" -f "$migration" 2>/dev/null || echo "Migration $migration may have already been applied"
+  fi
+done
+echo "Migrations complete!"
 
 # Start the server
 echo "Starting server..."

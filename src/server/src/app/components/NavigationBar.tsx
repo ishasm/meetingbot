@@ -19,6 +19,7 @@ interface NavItem {
   href: string;
   target: string;
   adminOnly?: boolean;
+  gcOnly?: boolean;
 }
 
 // All navigation items with role flags
@@ -32,6 +33,30 @@ const allNavItems: NavItem[] = [
     title: "Meetings",
     href: "/meetings",
     target: "_self",
+  },
+  {
+    title: "Calendar",
+    href: "/calendar",
+    target: "_self",
+    gcOnly: true,
+  },
+  {
+    title: "Attendees",
+    href: "/attendees",
+    target: "_self",
+    gcOnly: true,
+  },
+  {
+    title: "Action Items",
+    href: "/action-items",
+    target: "_self",
+    gcOnly: true,
+  },
+  {
+    title: "Agenda Items",
+    href: "/agenda-items",
+    target: "_self",
+    gcOnly: true,
   },
   {
     title: "API Keys",
@@ -62,12 +87,16 @@ const allNavItems: NavItem[] = [
 export default function NavigationBar() {
   const { data: session } = useSession();
   
-  // Check if user is admin
+  // Check user roles
   const isAdmin = session?.user?.role === "admin";
+  const isGC = session?.user?.role === "gc";
 
   // Filter navigation items based on role
   const navItems = allNavItems.filter((item) => {
     if (item.adminOnly && !isAdmin) {
+      return false;
+    }
+    if (item.gcOnly && !isGC) {
       return false;
     }
     return true;
@@ -106,6 +135,11 @@ export default function NavigationBar() {
         {isAdmin && (
           <span className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded-full">
             Admin
+          </span>
+        )}
+        {isGC && (
+          <span className="text-xs bg-emerald-600 text-white px-2 py-1 rounded-full">
+            GC
           </span>
         )}
         <SessionButton />
