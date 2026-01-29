@@ -14,7 +14,6 @@ interface NavItem {
   href: string;
   adminOnly?: boolean;
   gcOnly?: boolean;
-  icon?: React.ReactNode;
 }
 
 // All navigation items with role flags
@@ -89,26 +88,21 @@ export default function NavigationBar() {
   });
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b bg-background/80 backdrop-blur-lg supports-[backdrop-filter]:bg-background/60">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-7xl flex h-16 items-center justify-between">
+    <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-7xl flex h-14 items-center justify-between">
         {/* Logo and Nav */}
         <div className="flex items-center gap-8">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-3 group">
-            <div className="relative">
-              <div className="absolute inset-0 bg-primary/20 rounded-xl blur-lg group-hover:bg-primary/30 transition-colors" />
-              <div className="relative bg-gradient-to-br from-primary to-primary/80 p-2 rounded-xl shadow-lg shadow-primary/25">
-                <Image
-                  src="/logo.svg"
-                  alt="MeetingBot"
-                  width={24}
-                  height={24}
-                  className="brightness-0 invert"
-                />
-              </div>
-            </div>
-            <span className="font-bold text-lg hidden sm:block">
-              Meeting<span className="text-primary">Bot</span>
+          <Link href="/" className="flex items-center gap-2">
+            <Image
+              src="/logo.svg"
+              alt="Isha"
+              width={32}
+              height={28}
+              className="shrink-0"
+            />
+            <span className="font-semibold text-sm hidden sm:block">
+              MeetingBot
             </span>
           </Link>
 
@@ -123,10 +117,10 @@ export default function NavigationBar() {
                   key={item.href}
                   href={item.href}
                   className={cn(
-                    "px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200",
+                    "px-3 py-1.5 rounded-md text-sm transition-colors",
                     isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                      ? "bg-muted text-foreground font-medium"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                   )}
                 >
                   {item.title}
@@ -140,12 +134,12 @@ export default function NavigationBar() {
         <div className="flex items-center gap-3">
           {/* Role badges */}
           {isAdmin && (
-            <span className="text-xs font-semibold bg-gradient-to-r from-primary to-primary/80 text-primary-foreground px-3 py-1.5 rounded-full shadow-sm">
+            <span className="text-xs font-medium bg-primary text-primary-foreground px-2 py-1 rounded-md">
               Admin
             </span>
           )}
           {isGC && (
-            <span className="text-xs font-semibold bg-gradient-to-r from-emerald-500 to-emerald-600 text-white px-3 py-1.5 rounded-full shadow-sm">
+            <span className="text-xs font-medium bg-emerald-600 text-white px-2 py-1 rounded-md">
               GC
             </span>
           )}

@@ -217,19 +217,13 @@ export default function CalendarPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-            <div className="p-2 bg-primary/10 rounded-xl">
-              <CalendarIcon className="h-7 w-7 text-primary" />
-            </div>
-            Meeting Calendar
-          </h1>
-          <p className="text-muted-foreground mt-2 ml-14">
+          <h1 className="text-2xl font-semibold tracking-tight">Meeting Calendar</h1>
+          <p className="text-muted-foreground text-sm mt-1">
             View and manage your meetings with attendees
           </p>
         </div>
         <Button 
           onClick={() => setShowMeetingForm(!showMeetingForm)}
-          className="shadow-lg shadow-primary/25"
         >
           <Plus className="h-4 w-4 mr-2" />
           New Meeting
@@ -261,12 +255,12 @@ export default function CalendarPage() {
         </Card>
       )}
 
-      {/* Main Grid */}
+      {/* Main Grid - Calendar takes more space */}
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Calendar View */}
         <Card className="lg:col-span-2 overflow-hidden">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4 bg-gradient-to-r from-muted/50 to-transparent">
-            <CardTitle className="text-xl font-semibold">{format(currentMonth, "MMMM yyyy")}</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4 border-b">
+            <CardTitle className="text-base font-medium">{format(currentMonth, "MMMM yyyy")}</CardTitle>
             <div className="flex gap-1">
               <Button 
                 variant="ghost" 
@@ -304,7 +298,7 @@ export default function CalendarPage() {
                 
                 {/* Empty cells for days before month starts */}
                 {Array.from({ length: startDayOfWeek }).map((_, i) => (
-                  <div key={`empty-${i}`} className="p-2 min-h-[90px]" />
+                  <div key={`empty-${i}`} className="p-2 min-h-[80px]" />
                 ))}
                 
                 {/* Calendar days */}
@@ -319,27 +313,27 @@ export default function CalendarPage() {
                       key={dateKey}
                       onClick={() => setSelectedDate(day)}
                       className={`
-                        p-2 min-h-[90px] text-left rounded-xl border-2 transition-all duration-200
+                        p-2 min-h-[80px] text-left rounded-lg border transition-colors
                         ${isSelected 
-                          ? "border-primary bg-primary/5 shadow-md shadow-primary/20" 
-                          : "border-transparent hover:bg-muted/50 hover:border-muted"
+                          ? "border-primary bg-primary/5" 
+                          : "border-transparent hover:bg-muted/50"
                         }
-                        ${isToday && !isSelected ? "bg-blue-50/70 border-blue-200" : ""}
+                        ${isToday && !isSelected ? "bg-muted/40" : ""}
                       `}
                     >
                       <div className={`
-                        text-sm font-semibold mb-1 w-7 h-7 flex items-center justify-center rounded-full
-                        ${isToday ? "bg-blue-600 text-white" : ""}
-                        ${isSelected && !isToday ? "bg-primary text-primary-foreground" : ""}
+                        text-sm font-medium mb-1 w-7 h-7 flex items-center justify-center rounded-full
+                        ${isToday ? "bg-primary text-primary-foreground" : ""}
+                        ${isSelected && !isToday ? "bg-primary/10 text-primary" : ""}
                       `}>
                         {format(day, "d")}
                       </div>
                       {dayMeetings.length > 0 && (
-                        <div className="space-y-1">
+                        <div className="space-y-0.5">
                           {dayMeetings.slice(0, 2).map((meeting) => (
                             <div
                               key={meeting.id}
-                              className={`text-xs px-1.5 py-0.5 rounded-md truncate font-medium ${
+                              className={`text-xs px-1.5 py-0.5 rounded truncate font-medium ${
                                 calendarStatusColors[meeting.status] ?? calendarStatusColors.default
                               } text-white`}
                             >
@@ -347,7 +341,7 @@ export default function CalendarPage() {
                             </div>
                           ))}
                           {dayMeetings.length > 2 && (
-                            <div className="text-xs text-muted-foreground font-medium pl-1">
+                            <div className="text-xs text-muted-foreground pl-1">
                               +{dayMeetings.length - 2} more
                             </div>
                           )}
@@ -361,11 +355,11 @@ export default function CalendarPage() {
           </CardContent>
         </Card>
 
-        {/* Selected Date Details - Fixed height with scroll */}
-        <Card className="flex flex-col h-fit max-h-[600px]">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0 bg-gradient-to-r from-muted/50 to-transparent">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Video className="h-4 w-4 text-primary" />
+        {/* Selected Date Details - Fixed height matching calendar, scrollable content */}
+        <Card className="flex flex-col h-fit lg:max-h-[580px]">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0 border-b">
+            <CardTitle className="flex items-center gap-2 text-base font-medium">
+              <Video className="h-4 w-4 text-muted-foreground" />
               {selectedDate 
                 ? format(selectedDate, "EEE, MMM d, yyyy")
                 : "Select a date"
@@ -383,7 +377,7 @@ export default function CalendarPage() {
               </Button>
             )}
           </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto p-4">
+          <CardContent className="flex-1 min-h-0 overflow-y-auto p-4">
             {!selectedDate ? (
               <div className="text-center py-12 text-muted-foreground">
                 <CalendarIcon className="h-12 w-12 mx-auto mb-4 opacity-30" />

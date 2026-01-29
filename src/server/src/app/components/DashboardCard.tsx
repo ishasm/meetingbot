@@ -36,16 +36,16 @@ export default function DashboardCard({
   className,
 }: DashboardCardProps) {
   return (
-    <Card className={`flex h-full flex-col overflow-hidden ${className}`}>
+    <Card className={`flex h-full flex-col ${className}`}>
       {(!!title || !!description || !!icon) && (
         <CardHeader className="relative pb-2">
           {!!icon && (
-            <div className="absolute top-4 right-4 p-2 rounded-xl bg-muted/50">
+            <div className="absolute top-4 right-4 p-1.5 rounded-md bg-muted/60">
               {icon}
             </div>
           )}
           {!!title && typeof title === "string" ? (
-            <CardTitle className="text-lg">{title}</CardTitle>
+            <CardTitle className="text-base font-medium">{title}</CardTitle>
           ) : (
             title
           )}
@@ -59,22 +59,22 @@ export default function DashboardCard({
       )}
 
       {!!content && (
-        <CardContent className="min-h-0 flex-1 pt-2">{content}</CardContent>
+        <CardContent className="min-h-0 flex-1 pt-1">{content}</CardContent>
       )}
       {!!link && (
-        <CardFooter className="mt-auto pt-4 border-t bg-muted/30">
+        <CardFooter className="mt-auto pt-3">
           {link.type == "CUSTOM" ? (
             link.component
           ) : (
             <Link 
               href={link.url} 
-              className="flex items-center text-sm font-medium text-primary hover:text-primary/80 transition-colors group"
+              className="flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               {link.text}
               {link.type === "EXTERNAL" ? (
-                <ExternalLink className="ml-2 h-4 w-4" />
+                <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
               ) : (
-                <ChevronRight className="ml-1 h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
+                <ChevronRight className="ml-0.5 h-4 w-4" />
               )}
             </Link>
           )}
