@@ -118,6 +118,7 @@ export const agendaItemsRouter = createTRPCRouter({
         ownerName: z.string().nullable(),
         ownerNames: z.array(z.object({ id: z.number(), name: z.string() })),
         meetingTitle: z.string(),
+        meetingDate: z.date(),
       })),
     }))
     .query(async ({ ctx, input }) => {
@@ -142,6 +143,7 @@ export const agendaItemsRouter = createTRPCRouter({
           updatedAt: agendaItems.updatedAt,
           ownerName: attendees.name,
           meetingTitle: bots.meetingTitle,
+          meetingDate: bots.startTime,
         })
         .from(agendaItems)
         .innerJoin(bots, eq(agendaItems.botId, bots.id))

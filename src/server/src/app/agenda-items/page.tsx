@@ -3,10 +3,7 @@
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import Link from "next/link";
-import { format } from "date-fns";
 import { Skeleton } from "~/components/ui/skeleton";
-import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
@@ -23,32 +20,34 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "~/components/ui/tooltip";
+import { ToggleGroup, ToggleGroupItem } from "~/components/ui/toggle-group";
 import { api } from "~/trpc/react";
 import { 
   ClipboardList, 
   Search,
-  ExternalLink,
   Filter,
-  Clock,
-  User,
-  MessageSquare,
-  Gavel,
-  Eye,
+  LayoutList,
+  Table2,
+  Kanban,
 } from "lucide-react";
-import { cn } from "~/lib/utils";
 import { AgendaItemDetailModal } from "../meetings/components/AgendaItemDetailModal";
+import { 
+  AgendaListView, 
+  AgendaTableView, 
+  AgendaKanbanView,
+  type AgendaItem,
+  statusColors,
+} from "./components";
 
-const statusColors: Record<string, string> = {
-  Open: "bg-blue-100 text-blue-800 border-blue-200",
-  Closed: "bg-green-100 text-green-800 border-green-200",
-};
+type ViewMode = "list" | "table" | "kanban";
 
 export default function AgendaItemsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "Open" | "Closed">("all");
-  const [selectedItem, setSelectedItem] = useState<typeof agendaItems[0] | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [selectedItem, setSelectedItem] = useState<AgendaItem | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
 
   const utils = api.useUtils();
@@ -78,13 +77,23 @@ export default function AgendaItemsPage() {
     { enabled: !!session && isGC }
   );
 
-  const handleOpenDetail = (item: typeof agendaItems[0]) => {
+  const updateMutation = api.agendaItems.update.useMutation({
+    onSuccess: () => {
+      void utils.agendaItems.getAll.invalidate();
+    },
+  });
+
+  const handleOpenDetail = (item: AgendaItem) => {
     setSelectedItem(item);
     setDetailModalOpen(true);
   };
 
+  const handleStatusChange = (itemId: number, newStatus: string) => {
+    updateMutation.mutate({ id: itemId, status: newStatus as "Open" | "Closed" });
+  };
+
   // Filter agenda items
-  let agendaItems = agendaItemsData?.agendaItems ?? [];
+  let agendaItems = (agendaItemsData?.agendaItems ?? []) as AgendaItem[];
   
   if (searchTerm) {
     const searchLower = searchTerm.toLowerCase();
@@ -92,20 +101,9 @@ export default function AgendaItemsPage() {
       (item) =>
         item.description.toLowerCase().includes(searchLower) ||
         (item.ownerName?.toLowerCase().includes(searchLower) ?? false) ||
-        item.meetingTitle.toLowerCase().includes(searchLower)
+        (item.meetingTitle?.toLowerCase().includes(searchLower) ?? false)
     );
   }
-
-  // Group by meeting
-  const groupedItems: Record<number, typeof agendaItems> = {};
-  agendaItems.forEach((item) => {
-    const group = groupedItems[item.botId];
-    if (!group) {
-      groupedItems[item.botId] = [item];
-    } else {
-      group.push(item);
-    }
-  });
 
   const openCount = agendaItemsData?.agendaItems?.filter((i) => i.status === "Open").length ?? 0;
   const closedCount = agendaItemsData?.agendaItems?.filter((i) => i.status === "Closed").length ?? 0;
@@ -122,6 +120,48 @@ export default function AgendaItemsPage() {
   if (!session || !isGC) {
     return null;
   }
+
+  const renderEmptyState = () => (
+    <div className="text-center py-12 text-muted-foreground border-2 border-dashed rounded-lg">
+      <ClipboardList className="h-12 w-12 mx-auto mb-4 opacity-40" />
+      <p className="font-medium">No agenda items found</p>
+      <p className="text-sm mt-1">Agenda items from your meetings will appear here</p>
+    </div>
+  );
+
+  const renderView = () => {
+    if (agendaItems.length === 0) {
+      return renderEmptyState();
+    }
+
+    switch (viewMode) {
+      case "table":
+        return (
+          <AgendaTableView
+            items={agendaItems}
+            onItemClick={handleOpenDetail}
+            onStatusChange={handleStatusChange}
+          />
+        );
+      case "kanban":
+        return (
+          <AgendaKanbanView
+            items={agendaItems}
+            onItemClick={handleOpenDetail}
+            onStatusChange={handleStatusChange}
+          />
+        );
+      case "list":
+      default:
+        return (
+          <AgendaListView
+            items={agendaItems}
+            onItemClick={handleOpenDetail}
+            onStatusChange={handleStatusChange}
+          />
+        );
+    }
+  };
 
   return (
     <div className="space-y-6 py-6">
@@ -170,6 +210,44 @@ export default function AgendaItemsPage() {
                 </SelectContent>
               </Select>
             </div>
+            
+            {/* View Toggle */}
+            <div className="ml-auto">
+              <TooltipProvider>
+                <ToggleGroup
+                  type="single"
+                  value={viewMode}
+                  onValueChange={(value) => value && setViewMode(value as ViewMode)}
+                  variant="outline"
+                  size="sm"
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <ToggleGroupItem value="list" aria-label="List view">
+                        <LayoutList className="h-4 w-4" />
+                      </ToggleGroupItem>
+                    </TooltipTrigger>
+                    <TooltipContent>List view</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <ToggleGroupItem value="table" aria-label="Table view">
+                        <Table2 className="h-4 w-4" />
+                      </ToggleGroupItem>
+                    </TooltipTrigger>
+                    <TooltipContent>Table view</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <ToggleGroupItem value="kanban" aria-label="Kanban view">
+                        <Kanban className="h-4 w-4" />
+                      </ToggleGroupItem>
+                    </TooltipTrigger>
+                    <TooltipContent>Kanban view</TooltipContent>
+                  </Tooltip>
+                </ToggleGroup>
+              </TooltipProvider>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -183,152 +261,8 @@ export default function AgendaItemsPage() {
             <div className="rounded-md bg-red-50 p-4 text-red-600">
               Failed to load agenda items: {error.message}
             </div>
-          ) : agendaItems.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground border-2 border-dashed rounded-lg">
-              <ClipboardList className="h-12 w-12 mx-auto mb-4 opacity-40" />
-              <p className="font-medium">No agenda items found</p>
-              <p className="text-sm mt-1">Agenda items from your meetings will appear here</p>
-            </div>
           ) : (
-            <div className="space-y-6">
-              {Object.entries(groupedItems).map(([botId, items]) => (
-                <div key={botId} className="border rounded-lg overflow-hidden">
-                  <div className="bg-muted/50 px-4 py-3 flex items-center justify-between">
-                    <h3 className="font-semibold text-lg">
-                      {items[0]?.meetingTitle ?? `Meeting #${botId}`}
-                    </h3>
-                    <Link href={`/meetings/${botId}`}>
-                      <Button variant="ghost" size="sm">
-                        <ExternalLink className="h-4 w-4 mr-1" />
-                        View Meeting
-                      </Button>
-                    </Link>
-                  </div>
-                  <div className="divide-y">
-                    {items.map((item) => {
-                      const hasDetails = item.discussionSummary ?? item.decisionResolution;
-                      
-                      return (
-                        <div
-                          key={item.id}
-                          className={cn(
-                            "p-4 hover:bg-muted/30 cursor-pointer transition-colors group",
-                            item.status === "Closed" && "bg-muted/20"
-                          )}
-                          onClick={() => handleOpenDetail(item)}
-                        >
-                          <div className="flex items-start gap-4">
-                            {/* Serial number */}
-                            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-semibold text-primary">
-                              {item.serialNum}
-                            </div>
-                            
-                            {/* Content */}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-start justify-between gap-2 mb-2">
-                                <p className={cn(
-                                  "font-medium leading-relaxed",
-                                  item.status === "Closed" && "line-through text-muted-foreground"
-                                )}>
-                                  {item.description}
-                                </p>
-                                <Badge
-                                  variant="outline"
-                                  className={cn("shrink-0", statusColors[item.status ?? "Open"])}
-                                >
-                                  {item.status ?? "Open"}
-                                </Badge>
-                              </div>
-                              
-                              {/* Meta info row */}
-                              <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
-                                {item.duration && (
-                                  <div className="flex items-center gap-1.5">
-                                    <Clock className="h-3.5 w-3.5" />
-                                    <span>{item.duration}</span>
-                                  </div>
-                                )}
-
-                                {item.ownerNames && item.ownerNames.length > 0 ? (
-                                  <div className="flex items-center gap-1.5">
-                                    <User className="h-3.5 w-3.5" />
-                                    <span className="truncate max-w-[200px]">
-                                      {item.ownerNames.map((o) => o.name).join(", ")}
-                                    </span>
-                                  </div>
-                                ) : item.ownerName && (
-                                  <div className="flex items-center gap-1.5">
-                                    <User className="h-3.5 w-3.5" />
-                                    <span>{item.ownerName}</span>
-                                  </div>
-                                )}
-
-                                {item.dateAdded && (
-                                  <span className="text-xs">
-                                    Added {format(new Date(item.dateAdded), "MMM d")}
-                                  </span>
-                                )}
-
-                                {hasDetails && (
-                                  <div className="flex items-center gap-2">
-                                    {item.discussionSummary && (
-                                      <TooltipProvider>
-                                        <Tooltip>
-                                          <TooltipTrigger asChild>
-                                            <div className="flex items-center gap-1 text-blue-600">
-                                              <MessageSquare className="h-3.5 w-3.5" />
-                                            </div>
-                                          </TooltipTrigger>
-                                          <TooltipContent>Has discussion summary</TooltipContent>
-                                        </Tooltip>
-                                      </TooltipProvider>
-                                    )}
-                                    {item.decisionResolution && (
-                                      <TooltipProvider>
-                                        <Tooltip>
-                                          <TooltipTrigger asChild>
-                                            <div className="flex items-center gap-1 text-green-600">
-                                              <Gavel className="h-3.5 w-3.5" />
-                                            </div>
-                                          </TooltipTrigger>
-                                          <TooltipContent>Has decision/resolution</TooltipContent>
-                                        </Tooltip>
-                                      </TooltipProvider>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* View button */}
-                            <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      size="icon"
-                                      variant="ghost"
-                                      className="h-8 w-8"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleOpenDetail(item);
-                                      }}
-                                    >
-                                      <Eye className="h-4 w-4" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>View details</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
+            renderView()
           )}
         </CardContent>
       </Card>
