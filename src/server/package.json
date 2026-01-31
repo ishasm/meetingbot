@@ -80,6 +80,8 @@
     "tailwind-merge": "^3.0.2",
     "trpc-to-openapi": "^2.1.3",
     "tw-animate-css": "^1.2.4",
+    "jspdf": "^4.0.0",
+    "jspdf-autotable": "^5.0.7",
     "zod": "^3.24.2"
   },
   "devDependencies": {

@@ -71,7 +71,7 @@ export default function Dashboard() {
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <div className="h-5 w-1 rounded-full bg-emerald-500" />
-            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Governance Council</h2>
+            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Group Coordinator</h2>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <DashboardCard
@@ -90,7 +90,7 @@ export default function Dashboard() {
                 text: "Open Calendar",
               }}
             />
-            <DashboardCard
+            {/* <DashboardCard
               title="Attendees"
               className="h-full"
               description="Master attendee list"
@@ -109,7 +109,7 @@ export default function Dashboard() {
                 url: "/attendees",
                 text: "Manage Attendees",
               }}
-            />
+            /> */}
             <DashboardCard
               title="Action Items"
               className="h-full"

@@ -437,7 +437,12 @@ export default function MeetingDetailPage() {
 
       {/* GC-Only: Agenda Items Section - Show for all statuses */}
       {isGC && (
-        <MeetingAgendaItems botId={id} hasTranscription={hasTranscription} />
+        <MeetingAgendaItems 
+          botId={id} 
+          hasTranscription={hasTranscription} 
+          meetingTitle={bot.meetingTitle}
+          meetingDate={bot.startTime}
+        />
       )}
 
       {/* Transcript Section - Only for completed meetings */}

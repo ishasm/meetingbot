@@ -58,13 +58,17 @@ import {
   ChevronsUpDown,
   Loader2,
   Eye,
+  FileDown,
 } from "lucide-react";
+import { exportAgendaToPdf } from "~/lib/exportAgendaPdf";
 import { cn } from "~/lib/utils";
 import { AgendaItemDetailModal } from "./AgendaItemDetailModal";
 
 interface MeetingAgendaItemsProps {
   botId: number;
   hasTranscription: boolean;
+  meetingTitle?: string;
+  meetingDate?: Date | null;
 }
 
 const statusColors: Record<string, string> = {
@@ -96,7 +100,7 @@ const emptyFormData: AgendaFormData = {
   ownerAttendeeIds: [],
 };
 
-export function MeetingAgendaItems({ botId, hasTranscription }: MeetingAgendaItemsProps) {
+export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meetingDate }: MeetingAgendaItemsProps) {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [formData, setFormData] = useState<AgendaFormData>(emptyFormData);
   const [ownerSelectOpen, setOwnerSelectOpen] = useState(false);
@@ -157,6 +161,15 @@ export function MeetingAgendaItems({ botId, hasTranscription }: MeetingAgendaIte
     setDetailModalOpen(true);
   };
 
+  const handleExportPdf = () => {
+    if (agendaItems.length === 0) return;
+    exportAgendaToPdf({
+      meetingTitle: meetingTitle ?? "Meeting",
+      meetingDate: meetingDate,
+      agendaItems: agendaItems,
+    });
+  };
+
   const toggleOwner = (attendeeId: number) => {
     setFormData((prev) => {
       const ids = prev.ownerAttendeeIds;
@@ -182,6 +195,12 @@ export function MeetingAgendaItems({ botId, hasTranscription }: MeetingAgendaIte
           )}
         </CardTitle>
         <div className="flex gap-2">
+          {agendaItems.length > 0 && (
+            <Button variant="outline" size="sm" onClick={handleExportPdf}>
+              <FileDown className="h-4 w-4 mr-2" />
+              Export PDF
+            </Button>
+          )}
           <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
             <DialogTrigger asChild>
               <Button variant="outline" size="sm">
