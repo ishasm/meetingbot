@@ -9,6 +9,7 @@ import { actionItemsRouter } from "./routers/actionItems";
 import { attendeesRouter } from "./routers/attendees";
 import { meetingAttendeesRouter } from "./routers/meetingAttendees";
 import { agendaItemsRouter } from "./routers/agendaItems";
+import { googleCalendarRouter } from "./routers/googleCalendar";
 
 /**
  * This is the primary router for your server.
@@ -26,6 +27,7 @@ export const appRouter = createTRPCRouter({
   attendees: attendeesRouter,
   meetingAttendees: meetingAttendeesRouter,
   agendaItems: agendaItemsRouter,
+  googleCalendar: googleCalendarRouter,
 });
 
 // export type definition of API

@@ -1,10 +1,10 @@
 "use client";
 
-import { useSession } from "next-auth/react";
+import { useSession, signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, addMonths, subMonths } from "date-fns";
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, addMonths, subMonths, addDays } from "date-fns";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -14,6 +14,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "~/components/ui/dialog";
 import { api } from "~/trpc/react";
 import { 
@@ -26,6 +27,10 @@ import {
   Play,
   ExternalLink,
   X,
+  Download,
+  CheckCircle2,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 import { MeetingForm } from "../meetings/components/MeetingForm";
 
@@ -129,6 +134,272 @@ function AttendeesModal({ meetingId, meetingTitle, open, onOpenChange }: Attende
   );
 }
 
+// Google Calendar Import Modal
+interface GoogleCalendarImportModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onImportSuccess: () => void;
+}
+
+function GoogleCalendarImportModal({ open, onOpenChange, onImportSuccess }: GoogleCalendarImportModalProps) {
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [importingEventId, setImportingEventId] = useState<string | null>(null);
+  const [importResult, setImportResult] = useState<{
+    success: boolean;
+    meetingId?: number;
+    attendeesCount?: number;
+    message?: string;
+  } | null>(null);
+
+  const utils = api.useUtils();
+
+  // Check if Google Calendar is connected
+  const { data: connectionStatus, isLoading: checkingConnection } = api.googleCalendar.isConnected.useQuery(
+    {},
+    { enabled: open }
+  );
+
+  // Memoize date range to prevent infinite refetch loop
+  const dateRange = useMemo(() => {
+    const now = new Date();
+    return {
+      timeMin: now.toISOString(),
+      timeMax: addDays(now, 30).toISOString(),
+    };
+  }, [open]); // Only recalculate when modal opens
+
+  // Fetch calendar events for the next 30 days
+  const { data: calendarEvents, isLoading: loadingEvents, error: eventsError } = api.googleCalendar.getEvents.useQuery(
+    {
+      timeMin: dateRange.timeMin,
+      timeMax: dateRange.timeMax,
+      maxResults: 50,
+    },
+    { 
+      enabled: open && connectionStatus?.connected === true,
+      staleTime: 60000, // Consider data fresh for 1 minute
+      refetchOnWindowFocus: false,
+    }
+  );
+
+  // Import event mutation
+  const importEvent = api.googleCalendar.importEvent.useMutation({
+    onSuccess: (result) => {
+      setImportResult({
+        success: true,
+        meetingId: result.meetingId,
+        attendeesCount: result.attendeesImported.length,
+      });
+      setImportingEventId(null);
+      // Invalidate meetings query to refresh the calendar
+      void utils.bots.getUserMeetings.invalidate();
+      onImportSuccess();
+    },
+    onError: (error) => {
+      setImportResult({
+        success: false,
+        message: error.message,
+      });
+      setImportingEventId(null);
+    },
+  });
+
+  const handleImport = (eventId: string) => {
+    setImportingEventId(eventId);
+    setImportResult(null);
+    importEvent.mutate({ eventId, importAttendees: true });
+  };
+
+  const handleConnectGoogle = () => {
+    void signIn("google", { callbackUrl: "/calendar" });
+  };
+
+  const handleClose = () => {
+    setSelectedEventId(null);
+    setImportResult(null);
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CalendarIcon className="h-5 w-5" />
+            Import from Google Calendar
+          </DialogTitle>
+          <DialogDescription>
+            Select a calendar event to import as a meeting with attendees
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto py-4">
+          {checkingConnection ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : !connectionStatus?.connected ? (
+            <div className="text-center py-12">
+              <CalendarIcon className="h-16 w-16 mx-auto mb-4 text-muted-foreground/30" />
+              <h3 className="font-semibold text-lg mb-2">Connect Google Calendar</h3>
+              <p className="text-muted-foreground mb-6 max-w-sm mx-auto">
+                Connect your Google account to import calendar events and automatically add attendees to your meetings.
+              </p>
+              <Button onClick={handleConnectGoogle} className="gap-2">
+                <svg className="h-4 w-4" viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                  <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                  <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                  <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
+                Connect Google Account
+              </Button>
+            </div>
+          ) : loadingEvents ? (
+            <div className="space-y-3">
+              {[1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-20 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : eventsError ? (
+            <div className="text-center py-12">
+              <AlertCircle className="h-12 w-12 mx-auto mb-4 text-red-500" />
+              <p className="text-red-600 font-medium">Failed to load calendar events</p>
+              <p className="text-muted-foreground text-sm mt-1">{eventsError.message}</p>
+              <Button variant="outline" onClick={handleConnectGoogle} className="mt-4">
+                Reconnect Google Account
+              </Button>
+            </div>
+          ) : !calendarEvents || calendarEvents.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <CalendarIcon className="h-12 w-12 mx-auto mb-4 opacity-30" />
+              <p className="font-medium">No upcoming events</p>
+              <p className="text-sm mt-1">No calendar events found in the next 30 days</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {/* Import Result Banner */}
+              {importResult && (
+                <div className={`p-3 rounded-lg mb-4 ${
+                  importResult.success 
+                    ? "bg-green-50 border border-green-200" 
+                    : "bg-red-50 border border-red-200"
+                }`}>
+                  <div className="flex items-center gap-2">
+                    {importResult.success ? (
+                      <>
+                        <CheckCircle2 className="h-5 w-5 text-green-600" />
+                        <span className="text-green-800 font-medium">
+                          Meeting imported successfully with {importResult.attendeesCount} attendee{importResult.attendeesCount !== 1 ? "s" : ""}!
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="h-5 w-5 text-red-600" />
+                        <span className="text-red-800 font-medium">
+                          {importResult.message ?? "Failed to import event"}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {calendarEvents.map((event) => {
+                const eventDate = event.start.dateTime 
+                  ? new Date(event.start.dateTime) 
+                  : event.start.date 
+                    ? new Date(event.start.date) 
+                    : null;
+                const attendeeCount = event.attendees?.filter(a => !a.self).length ?? 0;
+                const hasMeetingLink = Boolean(event.hangoutLink);
+                const isImporting = importingEventId === event.id;
+
+                return (
+                  <div
+                    key={event.id}
+                    className={`p-4 border rounded-lg transition-all ${
+                      selectedEventId === event.id 
+                        ? "border-primary bg-primary/5" 
+                        : "hover:border-muted-foreground/30 hover:bg-muted/30"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-medium truncate">{event.summary ?? "Untitled Event"}</h4>
+                        <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
+                          {eventDate && (
+                            <span>{format(eventDate, "MMM d, yyyy 'at' h:mm a")}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 mt-2">
+                          {attendeeCount > 0 && (
+                            <Badge variant="secondary" className="text-xs">
+                              <Users className="h-3 w-3 mr-1" />
+                              {attendeeCount} attendee{attendeeCount !== 1 ? "s" : ""}
+                            </Badge>
+                          )}
+                          {hasMeetingLink && (
+                            <Badge variant="secondary" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                              <Video className="h-3 w-3 mr-1" />
+                              Google Meet
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => handleImport(event.id)}
+                        disabled={isImporting}
+                        className="shrink-0"
+                      >
+                        {isImporting ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                            Importing...
+                          </>
+                        ) : (
+                          <>
+                            <Download className="h-4 w-4 mr-1" />
+                            Import
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    {/* Show attendees preview */}
+                    {event.attendees && event.attendees.length > 0 && (
+                      <div className="mt-3 pt-3 border-t">
+                        <p className="text-xs text-muted-foreground mb-2">Attendees to import:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {event.attendees.filter(a => !a.self).slice(0, 5).map((attendee, idx) => (
+                            <Badge 
+                              key={idx} 
+                              variant="outline" 
+                              className="text-xs font-normal"
+                            >
+                              {attendee.displayName ?? attendee.email}
+                            </Badge>
+                          ))}
+                          {event.attendees.filter(a => !a.self).length > 5 && (
+                            <Badge variant="outline" className="text-xs font-normal">
+                              +{event.attendees.filter(a => !a.self).length - 5} more
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function CalendarPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -136,6 +407,9 @@ export default function CalendarPage() {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [showMeetingForm, setShowMeetingForm] = useState(false);
   const [attendeesModal, setAttendeesModal] = useState<{ meetingId: number; meetingTitle: string } | null>(null);
+  const [showGoogleCalendarImport, setShowGoogleCalendarImport] = useState(false);
+
+  const utils = api.useUtils();
 
   // Redirect to signin if not authenticated
   useEffect(() => {
@@ -222,12 +496,21 @@ export default function CalendarPage() {
             View and manage your meetings with attendees
           </p>
         </div>
-        <Button 
-          onClick={() => setShowMeetingForm(!showMeetingForm)}
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          New Meeting
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button 
+            variant="outline"
+            onClick={() => setShowGoogleCalendarImport(true)}
+          >
+            <CalendarIcon className="h-4 w-4 mr-2" />
+            Import from Google
+          </Button>
+          <Button 
+            onClick={() => setShowMeetingForm(!showMeetingForm)}
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            New Meeting
+          </Button>
+        </div>
       </div>
 
       {/* Meeting Form */}
@@ -489,6 +772,15 @@ export default function CalendarPage() {
           }}
         />
       )}
+
+      {/* Google Calendar Import Modal */}
+      <GoogleCalendarImportModal
+        open={showGoogleCalendarImport}
+        onOpenChange={setShowGoogleCalendarImport}
+        onImportSuccess={() => {
+          void utils.bots.getUserMeetings.invalidate();
+        }}
+      />
     </div>
   );
 }
