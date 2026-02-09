@@ -1,9 +1,10 @@
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import { type DefaultSession, type NextAuthConfig } from "next-auth";
 import GitHub from "next-auth/providers/github";
+import Google from "next-auth/providers/google";
 import Credentials from "next-auth/providers/credentials";
 import { db } from "~/server/db";
-import { users } from "~/server/db/schema";
+import { users, accounts } from "~/server/db/schema";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
@@ -34,6 +35,17 @@ declare module "next-auth" {
 export const authConfig = {
   providers: [
     GitHub,
+    Google({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      authorization: {
+        params: {
+          scope: "openid email profile https://www.googleapis.com/auth/calendar.readonly",
+          access_type: "offline",
+          prompt: "consent",
+        },
+      },
+    }),
     Credentials({
       name: "Email",
       credentials: {
@@ -97,6 +109,26 @@ export const authConfig = {
               .update(users)
               .set({ role: "admin" })
               .where(eq(users.id, user.id));
+          }
+        } else if (account?.provider === "google") {
+          // Google users get gc role by default (for Google Calendar access)
+          token.role = "gc";
+          if (user.id) {
+            await db
+              .update(users)
+              .set({ role: "gc" })
+              .where(eq(users.id, user.id));
+          }
+          // Store Google tokens for Calendar API access
+          if (account.access_token) {
+            await db
+              .update(accounts)
+              .set({
+                access_token: account.access_token,
+                refresh_token: account.refresh_token,
+                expires_at: account.expires_at,
+              })
+              .where(eq(accounts.providerAccountId, account.providerAccountId));
           }
         } else {
           token.role = user.role ?? "user";

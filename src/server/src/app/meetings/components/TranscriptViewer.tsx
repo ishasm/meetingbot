@@ -7,6 +7,7 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { Badge } from "~/components/ui/badge";
 import { api } from "~/trpc/react";
 import { FileText, Download, RefreshCw, Sparkles, Clock, User, Subtitles } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 interface TranscriptViewerProps {
   botId: number;
@@ -49,13 +50,18 @@ function getSpeakerColor(speaker: string): string {
 }
 
 export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps) {
-  const [showSummary, setShowSummary] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("segments");
+
+  const utils = api.useUtils();
 
   const { data: transcriptionData, isLoading: isLoadingTranscription } = 
     api.bots.getTranscription.useQuery({ id: botId });
 
   const { data: srtData } = api.bots.getSrt.useQuery({ id: botId });
+
+  // Fetch saved summary from database
+  const { data: savedSummary, isLoading: isLoadingSummary } = 
+    api.bots.getSummary.useQuery({ id: botId });
 
   const transcribeMutation = api.bots.transcribeBot.useMutation({
     onSuccess: () => {
@@ -64,9 +70,12 @@ export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps)
     },
   });
 
-  const summaryMutation = api.bots.generateSummary.useMutation();
-
-  const utils = api.useUtils();
+  const summaryMutation = api.bots.generateSummary.useMutation({
+    onSuccess: () => {
+      // Invalidate the saved summary query to refresh the UI
+      void utils.bots.getSummary.invalidate({ id: botId });
+    },
+  });
 
   const handleTranscribe = () => {
     transcribeMutation.mutate({
@@ -78,7 +87,6 @@ export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps)
 
   const handleGenerateSummary = () => {
     summaryMutation.mutate({ id: botId });
-    setShowSummary(true);
   };
 
   const handleDownloadSrt = () => {
@@ -295,7 +303,8 @@ export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps)
         </CardContent>
       </Card>
 
-      {showSummary && (summaryMutation.isPending || summaryMutation.data) && (
+      {/* Show summary card if there's a saved summary, generating, or just generated */}
+      {(Boolean(savedSummary?.summary) || summaryMutation.isPending || isLoadingSummary) && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -304,16 +313,16 @@ export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps)
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {summaryMutation.isPending ? (
+            {summaryMutation.isPending || isLoadingSummary ? (
               <div className="space-y-2">
                 <Skeleton className="h-4 w-full" />
                 <Skeleton className="h-4 w-3/4" />
                 <Skeleton className="h-4 w-5/6" />
               </div>
-            ) : summaryMutation.data ? (
-              <div className="prose prose-sm max-w-none">
-                <div className="bg-primary/5 rounded-lg p-4 whitespace-pre-wrap">
-                  {summaryMutation.data.summary}
+            ) : savedSummary?.summary ? (
+              <div className="bg-primary/5 rounded-lg p-6">
+                <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-headings:text-foreground prose-p:text-foreground/90 prose-p:leading-relaxed prose-ul:my-3 prose-li:my-1 prose-strong:text-foreground prose-headings:mt-4 prose-headings:mb-2 first:prose-headings:mt-0">
+                  <ReactMarkdown>{savedSummary.summary}</ReactMarkdown>
                 </div>
               </div>
             ) : null}

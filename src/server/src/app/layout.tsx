@@ -18,12 +18,16 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>
+      <body className="min-h-screen bg-background">
         <TRPCReactProvider>
           <SessionProvider>
-            <div className="flex h-full w-full flex-col items-center justify-center">
+            <div className="flex min-h-screen flex-col">
               <NavigationBar />
-              <div className="container h-full">{children}</div>
+              <main className="flex-1">
+                <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 max-w-7xl">
+                  {children}
+                </div>
+              </main>
             </div>
           </SessionProvider>
         </TRPCReactProvider>

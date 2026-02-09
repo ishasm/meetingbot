@@ -38,16 +38,20 @@ export default function DashboardCard({
   return (
     <Card className={`flex h-full flex-col ${className}`}>
       {(!!title || !!description || !!icon) && (
-        <CardHeader className="relative">
-          {!!icon && <div className="absolute top-2 right-2">{icon}</div>}
+        <CardHeader className="relative pb-2">
+          {!!icon && (
+            <div className="absolute top-4 right-4 p-1.5 rounded-md bg-muted/60">
+              {icon}
+            </div>
+          )}
           {!!title && typeof title === "string" ? (
-            <CardTitle>{title}</CardTitle>
+            <CardTitle className="text-base font-medium">{title}</CardTitle>
           ) : (
             title
           )}
           {!!description &&
             (typeof description === "string" ? (
-              <CardDescription>{description}</CardDescription>
+              <CardDescription className="text-sm">{description}</CardDescription>
             ) : (
               description
             ))}
@@ -55,19 +59,22 @@ export default function DashboardCard({
       )}
 
       {!!content && (
-        <CardContent className="min-h-0 flex-1">{content}</CardContent>
+        <CardContent className="min-h-0 flex-1 pt-1">{content}</CardContent>
       )}
       {!!link && (
-        <CardFooter className="mt-auto">
+        <CardFooter className="mt-auto pt-3">
           {link.type == "CUSTOM" ? (
             link.component
           ) : (
-            <Link href={link.url} className="flex items-center">
+            <Link 
+              href={link.url} 
+              className="flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
               {link.text}
               {link.type === "EXTERNAL" ? (
-                <ExternalLink className="ml-2 h-4 w-4" />
+                <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
               ) : (
-                <ChevronRight className="ml-2 h-4 w-4" />
+                <ChevronRight className="ml-0.5 h-4 w-4" />
               )}
             </Link>
           )}

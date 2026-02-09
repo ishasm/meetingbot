@@ -1,10 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { format } from "date-fns";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
+import { Calendar } from "~/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
+import { CalendarIcon } from "lucide-react";
+import { cn } from "~/lib/utils";
 import { api } from "~/trpc/react";
 
 // Validation functions for meeting URLs
@@ -30,22 +36,39 @@ const detectPlatform = (url: string): "google" | "zoom" | "teams" | null => {
 
 interface MeetingFormProps {
   onSuccess?: () => void;
+  redirectToMeeting?: boolean;
+  defaultDate?: Date;
 }
 
-export function MeetingForm({ onSuccess }: MeetingFormProps) {
+export function MeetingForm({ onSuccess, redirectToMeeting = true, defaultDate }: MeetingFormProps) {
   const [meetingUrl, setMeetingUrl] = useState("");
   const [meetingTitle, setMeetingTitle] = useState("");
+  const [scheduledDate, setScheduledDate] = useState<Date | undefined>(defaultDate ?? new Date());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const router = useRouter();
+
+  // Update scheduled date when defaultDate prop changes
+  useEffect(() => {
+    if (defaultDate) {
+      setScheduledDate(defaultDate);
+    }
+  }, [defaultDate]);
 
   const utils = api.useUtils();
   
   const createMeetingMutation = api.bots.createMeeting.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
       setMeetingUrl("");
       setMeetingTitle("");
+      setScheduledDate(new Date());
       setErrorMessage(null);
       void utils.bots.getUserMeetings.invalidate();
       onSuccess?.();
+      
+      // Redirect to the meeting detail page
+      if (redirectToMeeting && data?.id) {
+        router.push(`/meetings/${data.id}`);
+      }
     },
     onError: (error) => {
       setErrorMessage(error.message);
@@ -79,15 +102,16 @@ export function MeetingForm({ onSuccess }: MeetingFormProps) {
     createMeetingMutation.mutate({
       meetingUrl: normalizedUrl,
       meetingTitle: meetingTitle || undefined,
+      scheduledDate: scheduledDate?.toISOString(),
     });
   };
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Join a Meeting</CardTitle>
+        <CardTitle>Schedule a Meeting</CardTitle>
         <CardDescription>
-          Enter a meeting URL and we&apos;ll send a bot to record and transcribe it
+          Enter a meeting URL to create a meeting. You can add attendees and agenda items before starting the recording.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -132,15 +156,42 @@ export function MeetingForm({ onSuccess }: MeetingFormProps) {
             />
           </div>
 
+          <div className="space-y-2">
+            <Label>Scheduled Date</Label>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className={cn(
+                    "w-full justify-start text-left font-normal",
+                    !scheduledDate && "text-muted-foreground"
+                  )}
+                  disabled={createMeetingMutation.isPending}
+                >
+                  <CalendarIcon className="mr-2 h-4 w-4" />
+                  {scheduledDate ? format(scheduledDate, "PPP") : "Pick a date"}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                  mode="single"
+                  selected={scheduledDate}
+                  onSelect={setScheduledDate}
+                  initialFocus
+                />
+              </PopoverContent>
+            </Popover>
+          </div>
+
           <Button
             type="submit"
             disabled={!detectedPlatform || createMeetingMutation.isPending}
             className="w-full"
           >
             {createMeetingMutation.isPending
-              ? "Sending Bot..."
+              ? "Creating Meeting..."
               : detectedPlatform
-              ? `Send Bot to ${platformLabels[detectedPlatform]}`
+              ? `Create ${platformLabels[detectedPlatform]} Meeting`
               : "Enter a valid meeting URL"}
           </Button>
         </form>

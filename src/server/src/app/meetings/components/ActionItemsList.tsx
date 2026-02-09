@@ -1,13 +1,12 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
 import { Badge } from "~/components/ui/badge";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Input } from "~/components/ui/input";
-import { RichTextEditor } from "~/components/ui/rich-text-editor";
 import { api } from "~/trpc/react";
 import { ListTodo, Sparkles, Trash2, RefreshCw, Plus, User, ChevronDown, Copy, Check } from "lucide-react";
 import { ActionItemForm } from "./ActionItemForm";

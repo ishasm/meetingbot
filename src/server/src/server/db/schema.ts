@@ -34,7 +34,7 @@ export const users = pgTable("user", {
   image: text("image"),
   createdAt: timestamp("createdAt").defaultNow(),
   // New fields for email/password auth and role management
-  role: varchar("role", { length: 20 }).default("user"), // "admin" | "user"
+  role: varchar("role", { length: 20 }).default("user"), // "admin" | "user" | "gc"
   password: text("password"), // hashed password for email auth
 });
 
@@ -287,6 +287,7 @@ export const bots = pgTable("bots", {
   transcriptionSrt: text("transcription_srt"), // SRT format with timestamps and speaker names
   transcriptionSegments: json("transcription_segments").$type<TranscriptionSegmentData[]>(), // Raw segments for flexible rendering
   transcriptionProvider: varchar("transcription_provider", { length: 50 }),
+  summary: text("summary"), // AI-generated meeting summary
   speakerTimeframes: json('speaker_timeframes')
     .$type<SpeakerTimeframe[]>()
     .notNull()
@@ -414,6 +415,125 @@ export const dailyUsageSchema = z.object({
 
 export type DailyUsageType = z.infer<typeof dailyUsageSchema>;
 
+/** ATTENDEES - Master list of meeting attendees */
+export const attendees = pgTable("attendees", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  email: varchar("email", { length: 255 }),
+  role: varchar("role", { length: 100 }), // Role/title of the attendee
+  department: varchar("department", { length: 100 }),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertAttendeeSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  email: z.string().email().optional().or(z.literal("")),
+  role: z.string().optional(),
+  department: z.string().optional(),
+});
+
+export const selectAttendeeSchema = createSelectSchema(attendees);
+export const updateAttendeeSchema = z.object({
+  id: z.number(),
+  name: z.string().min(1).optional(),
+  email: z.string().email().optional().or(z.literal("")).nullable(),
+  role: z.string().optional().nullable(),
+  department: z.string().optional().nullable(),
+});
+
+export type InsertAttendeeType = z.infer<typeof insertAttendeeSchema>;
+export type SelectAttendeeType = z.infer<typeof selectAttendeeSchema>;
+export type UpdateAttendeeType = z.infer<typeof updateAttendeeSchema>;
+
+/** MEETING ATTENDEES - Junction table linking attendees to meetings (bots) */
+export const meetingAttendees = pgTable("meeting_attendees", {
+  id: serial("id").primaryKey(),
+  botId: integer("bot_id")
+    .references(() => bots.id, { onDelete: "cascade" })
+    .notNull(),
+  attendeeId: integer("attendee_id")
+    .references(() => attendees.id, { onDelete: "cascade" })
+    .notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertMeetingAttendeeSchema = z.object({
+  botId: z.number(),
+  attendeeId: z.number(),
+});
+
+export const selectMeetingAttendeeSchema = createSelectSchema(meetingAttendees);
+
+export type InsertMeetingAttendeeType = z.infer<typeof insertMeetingAttendeeSchema>;
+export type SelectMeetingAttendeeType = z.infer<typeof selectMeetingAttendeeSchema>;
+
+/** AGENDA ITEMS - Per-meeting agenda items */
+export const agendaItems = pgTable("agenda_items", {
+  id: serial("id").primaryKey(),
+  botId: integer("bot_id")
+    .references(() => bots.id, { onDelete: "cascade" })
+    .notNull(),
+  serialNum: integer("serial_num").notNull(),
+  description: text("description").notNull(),
+  duration: varchar("duration", { length: 50 }), // e.g., "30 Minutes", "1 Hour"
+  dateAdded: timestamp("date_added").defaultNow(),
+  status: varchar("status", { length: 20 }).default("Open"), // "Open" | "Closed"
+  remarks: text("remarks"),
+  discussionSummary: text("discussion_summary"),
+  decisionResolution: text("decision_resolution"),
+  ownerAttendeeId: integer("owner_attendee_id")
+    .references(() => attendees.id, { onDelete: "set null" }),
+  ownerAttendeeIds: json("owner_attendee_ids").$type<number[]>().default([]), // Multiple owners support
+  sadhguruComments: text("sadhguru_comments"),
+  attachments: json("attachments").$type<string[]>().default([]),
+  source: varchar("source", { length: 20 }).default("manual"), // "manual" | "ai-generated"
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertAgendaItemSchema = z.object({
+  botId: z.number(),
+  serialNum: z.number().optional(),
+  description: z.string().min(1, "Description is required"),
+  duration: z.string().optional(),
+  status: z.enum(["Open", "Closed"]).optional().default("Open"),
+  remarks: z.string().optional(),
+  discussionSummary: z.string().optional(),
+  decisionResolution: z.string().optional(),
+  ownerAttendeeId: z.number().optional().nullable(),
+  ownerAttendeeIds: z.array(z.number()).optional(),
+  sadhguruComments: z.string().optional(),
+  attachments: z.array(z.string()).optional(),
+  source: z.enum(["manual", "ai-generated"]).optional().default("manual"),
+});
+
+export const selectAgendaItemSchema = createSelectSchema(agendaItems).extend({
+  attachments: z.array(z.string()).nullable(),
+  ownerAttendeeIds: z.array(z.number()).nullable(),
+  source: z.enum(["manual", "ai-generated"]).nullable(),
+});
+
+export const updateAgendaItemSchema = z.object({
+  id: z.number(),
+  serialNum: z.number().optional(),
+  description: z.string().optional(),
+  duration: z.string().optional().nullable(),
+  status: z.enum(["Open", "Closed"]).optional(),
+  remarks: z.string().optional().nullable(),
+  discussionSummary: z.string().optional().nullable(),
+  decisionResolution: z.string().optional().nullable(),
+  ownerAttendeeId: z.number().optional().nullable(),
+  ownerAttendeeIds: z.array(z.number()).optional(),
+  sadhguruComments: z.string().optional().nullable(),
+  attachments: z.array(z.string()).optional(),
+  source: z.enum(["manual", "ai-generated"]).optional(),
+});
+
+export type InsertAgendaItemType = z.infer<typeof insertAgendaItemSchema>;
+export type SelectAgendaItemType = z.infer<typeof selectAgendaItemSchema>;
+export type UpdateAgendaItemType = z.infer<typeof updateAgendaItemSchema>;
+
 /** ACTION ITEMS */
 export const actionItems = pgTable("action_items", {
   id: serial("id").primaryKey(),
@@ -424,7 +544,9 @@ export const actionItems = pgTable("action_items", {
     .references(() => users.id, { onDelete: "cascade" })
     .notNull(),
   content: text("content").notNull(),
-  assignee: varchar("assignee", { length: 255 }),
+  assignee: varchar("assignee", { length: 255 }), // Legacy field - kept for backward compatibility
+  assigneeAttendeeId: integer("assignee_attendee_id")
+    .references(() => attendees.id, { onDelete: "set null" }), // New FK to attendees
   dueDate: timestamp("due_date"),
   isCompleted: boolean("is_completed").default(false),
   priority: varchar("priority", { length: 20 }).default("medium"), // "low" | "medium" | "high"
@@ -435,7 +557,8 @@ export const actionItems = pgTable("action_items", {
 export const insertActionItemSchema = z.object({
   botId: z.number(),
   content: z.string().min(1, "Content is required"),
-  assignee: z.string().optional(),
+  assignee: z.string().optional(), // Legacy field
+  assigneeAttendeeId: z.number().optional().nullable(), // New FK to attendees
   dueDate: z.date().optional(),
   priority: z.enum(["low", "medium", "high"]).optional().default("medium"),
 });
@@ -444,7 +567,8 @@ export const selectActionItemSchema = createSelectSchema(actionItems);
 export const updateActionItemSchema = z.object({
   id: z.number(),
   content: z.string().optional(),
-  assignee: z.string().nullable().optional(),
+  assignee: z.string().nullable().optional(), // Legacy field
+  assigneeAttendeeId: z.number().nullable().optional(), // New FK to attendees
   dueDate: z.date().nullable().optional(),
   isCompleted: z.boolean().optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),

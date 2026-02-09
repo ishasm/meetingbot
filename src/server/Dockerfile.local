@@ -30,8 +30,8 @@ RUN pnpm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-# Install Docker CLI for bot deployment and wget for MinIO client
-RUN apk add --no-cache docker-cli wget ca-certificates
+# Install Docker CLI for bot deployment, wget for MinIO client, and postgresql-client for migrations
+RUN apk add --no-cache docker-cli wget ca-certificates postgresql-client
 
 # Install pnpm
 RUN npm install -g pnpm

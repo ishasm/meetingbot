@@ -765,7 +765,44 @@ export const botsRouter = createTRPCRouter({
       const data: unknown = await response.json();
       const summary = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates?.[0]?.content?.parts?.[0]?.text ?? "Unable to generate summary";
 
+      // Save the summary to the database
+      await ctx.db
+        .update(bots)
+        .set({ summary })
+        .where(eq(bots.id, input.id));
+
       return { summary };
+    }),
+
+  getSummary: protectedProcedure
+    .meta({
+      openapi: {
+        method: "GET",
+        path: "/bots/{id}/summary",
+        description: "Get the saved meeting summary for a bot",
+      },
+    })
+    .input(z.object({
+      id: z.number(),
+    }))
+    .output(z.object({
+      summary: z.string().nullable(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const result = await ctx.db
+        .select({ 
+          summary: bots.summary,
+          userId: bots.userId,
+        })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      const bot = result[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      return { summary: bot.summary };
     }),
 
   // ============================================================================
@@ -791,6 +828,7 @@ export const botsRouter = createTRPCRouter({
         platform: z.string().nullable(),
         status: z.string(),
         createdAt: z.date().nullable(),
+        scheduledDate: z.date().nullable(),
         hasTranscription: z.boolean(),
         hasRecording: z.boolean(),
       })),
@@ -804,12 +842,13 @@ export const botsRouter = createTRPCRouter({
           meetingInfo: bots.meetingInfo,
           status: bots.status,
           createdAt: bots.createdAt,
+          startTime: bots.startTime,
           transcription: bots.transcription,
           recording: bots.recording,
         })
         .from(bots)
         .where(eq(bots.userId, ctx.session.user.id))
-        .orderBy(bots.createdAt)
+        .orderBy(bots.startTime)
         .limit(input.limit)
         .offset(input.offset);
 
@@ -824,6 +863,7 @@ export const botsRouter = createTRPCRouter({
         platform: bot.meetingInfo?.platform ?? null,
         status: bot.status,
         createdAt: bot.createdAt,
+        scheduledDate: bot.startTime,
         hasTranscription: !!bot.transcription,
         hasRecording: !!bot.recording,
       }));
@@ -839,13 +879,14 @@ export const botsRouter = createTRPCRouter({
       openapi: {
         method: "POST",
         path: "/meetings",
-        description: "Create a new meeting and deploy bot",
+        description: "Create a new meeting (bot will not join until joinMeeting is called)",
       },
     })
     .input(z.object({
       meetingUrl: z.string().url(),
       meetingTitle: z.string().optional(),
       botDisplayName: z.string().optional(),
+      scheduledDate: z.string().optional(), // ISO date string for scheduling
     }))
     .output(selectBotSchema)
     .mutation(async ({ input, ctx }) => {
@@ -855,13 +896,16 @@ export const botsRouter = createTRPCRouter({
         throw new Error("Invalid meeting URL. Please provide a valid Google Meet, Zoom, or Teams meeting link.");
       }
 
+      // Use scheduled date if provided, otherwise use current date
+      const scheduledTime = input.scheduledDate ? new Date(input.scheduledDate) : new Date();
+
       const dbInput = {
         botDisplayName: input.botDisplayName ?? "MeetingBot",
         userId: ctx.session.user.id,
         meetingTitle: input.meetingTitle ?? "Meeting",
         meetingInfo,
-        startTime: new Date(),
-        endTime: new Date(),
+        startTime: scheduledTime,
+        endTime: scheduledTime,
         heartbeatInterval: 5000,
         automaticLeave: {
           waitingRoomTimeout: 300000,
@@ -877,12 +921,96 @@ export const botsRouter = createTRPCRouter({
         throw new Error("Failed to create meeting");
       }
 
-      // Deploy bot immediately
-      if (await shouldDeployImmediately(new Date())) {
-        return await deployBot({
-          botId: result[0].id,
-          db: ctx.db,
-        });
+      // Return the bot in READY_TO_DEPLOY status - user must call joinMeeting to deploy
+      return result[0];
+    }),
+
+  // Join a meeting - deploys the bot to start recording
+  joinMeeting: protectedProcedure
+    .meta({
+      openapi: {
+        method: "POST",
+        path: "/meetings/{id}/join",
+        description: "Deploy the bot to join a meeting and start recording",
+      },
+    })
+    .input(z.object({ id: z.number() }))
+    .output(selectBotSchema)
+    .mutation(async ({ input, ctx }) => {
+      // Verify ownership
+      const bot = await ctx.db.select().from(bots).where(eq(bots.id, input.id));
+
+      if (!bot[0] || bot[0].userId !== ctx.session.user.id) {
+        throw new Error("Meeting not found");
+      }
+
+      // Only allow joining if status is READY_TO_DEPLOY
+      if (bot[0].status !== "READY_TO_DEPLOY") {
+        throw new Error("Meeting has already been started or completed");
+      }
+
+      // Deploy the bot
+      return await deployBot({
+        botId: input.id,
+        db: ctx.db,
+      });
+    }),
+
+  // Update meeting details (only for READY_TO_DEPLOY meetings)
+  updateMeeting: protectedProcedure
+    .meta({
+      openapi: {
+        method: "PATCH",
+        path: "/meetings/{id}",
+        description: "Update meeting details (only before bot joins)",
+      },
+    })
+    .input(z.object({
+      id: z.number(),
+      meetingTitle: z.string().optional(),
+      meetingUrl: z.string().url().optional(),
+    }))
+    .output(selectBotSchema)
+    .mutation(async ({ input, ctx }) => {
+      // Verify ownership
+      const bot = await ctx.db.select().from(bots).where(eq(bots.id, input.id));
+
+      if (!bot[0] || bot[0].userId !== ctx.session.user.id) {
+        throw new Error("Meeting not found");
+      }
+
+      // Only allow updates if status is READY_TO_DEPLOY
+      if (bot[0].status !== "READY_TO_DEPLOY") {
+        throw new Error("Cannot edit meeting after bot has joined");
+      }
+
+      // Build update object
+      const updates: Record<string, unknown> = {};
+      
+      if (input.meetingTitle !== undefined) {
+        updates.meetingTitle = input.meetingTitle;
+      }
+
+      if (input.meetingUrl !== undefined) {
+        const meetingInfo = parseMeetingUrl(input.meetingUrl);
+        if (!meetingInfo) {
+          throw new Error("Invalid meeting URL. Please provide a valid Google Meet, Zoom, or Teams meeting link.");
+        }
+        updates.meetingInfo = meetingInfo;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return bot[0];
+      }
+
+      const result = await ctx.db
+        .update(bots)
+        .set(updates)
+        .where(eq(bots.id, input.id))
+        .returning();
+
+      if (!result[0]) {
+        throw new Error("Failed to update meeting");
       }
 
       return result[0];
