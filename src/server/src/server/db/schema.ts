@@ -287,6 +287,7 @@ export const bots = pgTable("bots", {
   transcriptionSrt: text("transcription_srt"), // SRT format with timestamps and speaker names
   transcriptionSegments: json("transcription_segments").$type<TranscriptionSegmentData[]>(), // Raw segments for flexible rendering
   transcriptionProvider: varchar("transcription_provider", { length: 50 }),
+  summary: text("summary"), // AI-generated meeting summary
   speakerTimeframes: json('speaker_timeframes')
     .$type<SpeakerTimeframe[]>()
     .notNull()
@@ -486,6 +487,7 @@ export const agendaItems = pgTable("agenda_items", {
   ownerAttendeeIds: json("owner_attendee_ids").$type<number[]>().default([]), // Multiple owners support
   sadhguruComments: text("sadhguru_comments"),
   attachments: json("attachments").$type<string[]>().default([]),
+  source: varchar("source", { length: 20 }).default("manual"), // "manual" | "ai-generated"
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -503,11 +505,13 @@ export const insertAgendaItemSchema = z.object({
   ownerAttendeeIds: z.array(z.number()).optional(),
   sadhguruComments: z.string().optional(),
   attachments: z.array(z.string()).optional(),
+  source: z.enum(["manual", "ai-generated"]).optional().default("manual"),
 });
 
 export const selectAgendaItemSchema = createSelectSchema(agendaItems).extend({
   attachments: z.array(z.string()).nullable(),
   ownerAttendeeIds: z.array(z.number()).nullable(),
+  source: z.enum(["manual", "ai-generated"]).nullable(),
 });
 
 export const updateAgendaItemSchema = z.object({
@@ -523,6 +527,7 @@ export const updateAgendaItemSchema = z.object({
   ownerAttendeeIds: z.array(z.number()).optional(),
   sadhguruComments: z.string().optional().nullable(),
   attachments: z.array(z.string()).optional(),
+  source: z.enum(["manual", "ai-generated"]).optional(),
 });
 
 export type InsertAgendaItemType = z.infer<typeof insertAgendaItemSchema>;

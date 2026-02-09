@@ -59,6 +59,7 @@ import {
   Loader2,
   Eye,
   FileDown,
+  Bot,
 } from "lucide-react";
 import { exportAgendaToPdf } from "~/lib/exportAgendaPdf";
 import { cn } from "~/lib/utils";
@@ -92,12 +93,14 @@ interface AgendaFormData {
   description: string;
   duration: string;
   ownerAttendeeIds: number[];
+  remarks: string;
 }
 
 const emptyFormData: AgendaFormData = {
   description: "",
   duration: "",
   ownerAttendeeIds: [],
+  remarks: "",
 };
 
 export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meetingDate }: MeetingAgendaItemsProps) {
@@ -106,6 +109,7 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
   const [ownerSelectOpen, setOwnerSelectOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<typeof agendaItems[0] | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [summaryResult, setSummaryResult] = useState<{ updated: number; created: number } | null>(null);
 
   const utils = api.useUtils();
 
@@ -131,8 +135,11 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
   });
 
   const generateSummariesMutation = api.agendaItems.generateSummaries.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
       void utils.agendaItems.getByMeeting.invalidate({ botId });
+      setSummaryResult({ updated: data.updated, created: data.created });
+      // Auto-hide the success message after 5 seconds
+      setTimeout(() => setSummaryResult(null), 5000);
     },
   });
 
@@ -143,6 +150,7 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
       description: formData.description.trim(),
       duration: formData.duration || undefined,
       ownerAttendeeIds: formData.ownerAttendeeIds.length > 0 ? formData.ownerAttendeeIds : undefined,
+      remarks: formData.remarks.trim() || undefined,
     });
   };
 
@@ -224,6 +232,17 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                     placeholder="Enter the agenda item description..."
                     rows={4}
+                    className="resize-none"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remarks">Remarks</Label>
+                  <Textarea
+                    id="remarks"
+                    value={formData.remarks}
+                    onChange={(e) => setFormData({ ...formData, remarks: e.target.value })}
+                    placeholder="Enter any additional remarks..."
+                    rows={3}
                     className="resize-none"
                   />
                 </div>
@@ -336,7 +355,7 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
             </DialogContent>
           </Dialog>
 
-          {hasTranscription && agendaItems.length > 0 && (
+          {hasTranscription && (
             <Button
               size="sm"
               onClick={handleGenerateSummaries}
@@ -407,12 +426,30 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
                           )}>
                             {item.description}
                           </p>
-                          <Badge
-                            variant="outline"
-                            className={cn("shrink-0", statusColors[item.status ?? "Open"])}
-                          >
-                            {item.status ?? "Open"}
-                          </Badge>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {item.source === "ai-generated" && (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Badge
+                                      variant="outline"
+                                      className="bg-purple-50 text-purple-700 border-purple-200"
+                                    >
+                                      <Bot className="h-3 w-3 mr-1" />
+                                      AI
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>AI-generated agenda item</TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            )}
+                            <Badge
+                              variant="outline"
+                              className={cn("shrink-0", statusColors[item.status ?? "Open"])}
+                            >
+                              {item.status ?? "Open"}
+                            </Badge>
+                          </div>
                         </div>
                         
                         {/* Meta info row */}
@@ -528,6 +565,29 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
         {generateSummariesMutation.error && (
           <div className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-600">
             Failed to generate summaries: {generateSummariesMutation.error.message}
+          </div>
+        )}
+
+        {summaryResult && (
+          <div className="mt-4 rounded-md bg-green-50 border border-green-200 p-3 text-sm text-green-700 flex items-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            <span>
+              {summaryResult.updated > 0 && summaryResult.created > 0 ? (
+                <>Updated {summaryResult.updated} agenda item{summaryResult.updated !== 1 ? 's' : ''} and created {summaryResult.created} new AI-generated item{summaryResult.created !== 1 ? 's' : ''}</>
+              ) : summaryResult.updated > 0 ? (
+                <>Updated {summaryResult.updated} agenda item{summaryResult.updated !== 1 ? 's' : ''} with discussion summaries</>
+              ) : summaryResult.created > 0 ? (
+                <>Created {summaryResult.created} new AI-generated agenda item{summaryResult.created !== 1 ? 's' : ''}</>
+              ) : (
+                <>No agenda items were updated or created</>
+              )}
+            </span>
+            <button
+              onClick={() => setSummaryResult(null)}
+              className="ml-auto hover:text-green-900"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         )}
       </CardContent>

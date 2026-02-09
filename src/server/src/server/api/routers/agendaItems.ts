@@ -56,6 +56,7 @@ export const agendaItemsRouter = createTRPCRouter({
           ownerAttendeeIds: agendaItems.ownerAttendeeIds,
           sadhguruComments: agendaItems.sadhguruComments,
           attachments: agendaItems.attachments,
+          source: agendaItems.source,
           createdAt: agendaItems.createdAt,
           updatedAt: agendaItems.updatedAt,
           ownerName: attendees.name,
@@ -93,6 +94,8 @@ export const agendaItemsRouter = createTRPCRouter({
           .filter((o) => o.name !== "Unknown");
         return {
           ...item,
+          // Cast source to the expected type
+          source: item.source as "manual" | "ai-generated" | null,
           ownerNames,
         };
       });
@@ -139,6 +142,7 @@ export const agendaItemsRouter = createTRPCRouter({
           ownerAttendeeIds: agendaItems.ownerAttendeeIds,
           sadhguruComments: agendaItems.sadhguruComments,
           attachments: agendaItems.attachments,
+          source: agendaItems.source,
           createdAt: agendaItems.createdAt,
           updatedAt: agendaItems.updatedAt,
           ownerName: attendees.name,
@@ -179,6 +183,8 @@ export const agendaItemsRouter = createTRPCRouter({
           .filter((o) => o.name !== "Unknown");
         return {
           ...item,
+          // Cast source to the expected type
+          source: item.source as "manual" | "ai-generated" | null,
           ownerNames,
         };
       });
@@ -254,7 +260,10 @@ export const agendaItemsRouter = createTRPCRouter({
         throw new Error("Failed to create agenda item");
       }
 
-      return item;
+      return {
+        ...item,
+        source: item.source as "manual" | "ai-generated" | null,
+      };
     }),
 
   // Update an agenda item
@@ -309,7 +318,10 @@ export const agendaItemsRouter = createTRPCRouter({
         throw new Error("Failed to update agenda item");
       }
 
-      return item;
+      return {
+        ...item,
+        source: item.source as "manual" | "ai-generated" | null,
+      };
     }),
 
   // Delete an agenda item
@@ -349,12 +361,13 @@ export const agendaItemsRouter = createTRPCRouter({
       openapi: {
         method: "POST",
         path: "/meetings/{botId}/agenda-items/generate-summaries",
-        description: "Generate discussion summaries for agenda items from the meeting transcript",
+        description: "Generate discussion summaries for agenda items from the meeting transcript. Updates existing agenda items and creates new ones for topics discussed that were not in the original agenda.",
       },
     })
     .input(z.object({ botId: z.number() }))
     .output(z.object({
       updated: z.number(),
+      created: z.number(),
       agendaItems: z.array(selectAgendaItemSchema),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -384,39 +397,52 @@ export const agendaItemsRouter = createTRPCRouter({
         .where(eq(agendaItems.botId, input.botId))
         .orderBy(agendaItems.serialNum);
 
-      if (items.length === 0) {
-        throw new Error("No agenda items found for this meeting");
-      }
-
       // Check if Gemini is available
       const geminiKey = process.env.GEMINI_API_KEY;
       if (!geminiKey) {
         throw new Error("Gemini API key not configured for summary generation");
       }
 
-      // Build the agenda items list for the prompt
-      const agendaList = items
-        .map((item) => `${item.serialNum}. ${item.description}`)
-        .join("\n");
+      // Build the agenda items list for the prompt (could be empty)
+      const hasExistingItems = items.length > 0;
+      const agendaList = hasExistingItems
+        ? items.map((item) => `${item.serialNum}. ${item.description}`).join("\n")
+        : "(No existing agenda items)";
 
       const systemPrompt = `You are an assistant that analyzes meeting transcripts and matches discussion content to agenda items.
 
-Given the following agenda items:
-${agendaList}
+${hasExistingItems ? `Given the following existing agenda items:
+${agendaList}` : "There are no existing agenda items for this meeting."}
 
-Analyze the transcript and for each agenda item, provide a summary of what was discussed.
+Analyze the transcript and provide:
+1. For EXISTING agenda items (if any): discussion summaries for each item that was discussed
+2. For NEW topics: identify any significant topics that were discussed but are NOT covered by the existing agenda items
 
-Respond with a JSON object where keys are the agenda item serial numbers and values are objects with:
-- "discussionSummary": A concise summary of what was discussed for this agenda item (or null if not discussed)
-- "decisionResolution": Any decisions or resolutions made (or null if none)
+Respond with a JSON object with two keys:
+- "existingItems": An object where keys are the agenda item serial numbers and values are objects with:
+  - "discussionSummary": A concise summary of what was discussed (or null if not discussed)
+  - "decisionResolution": Any decisions or resolutions made (or null if none)
+- "newItems": An array of new agenda items for topics discussed that were NOT in the original agenda. Each item should have:
+  - "description": A clear, concise title for the topic
+  - "discussionSummary": What was discussed about this topic
+  - "decisionResolution": Any decisions made (or null if none)
 
 Example response:
 {
-  "1": {"discussionSummary": "Team discussed the migration timeline...", "decisionResolution": "Agreed to complete by Q2"},
-  "2": {"discussionSummary": "Budget was reviewed...", "decisionResolution": null}
+  "existingItems": {
+    "1": {"discussionSummary": "Team discussed the migration timeline...", "decisionResolution": "Agreed to complete by Q2"},
+    "2": {"discussionSummary": "Budget was reviewed...", "decisionResolution": null}
+  },
+  "newItems": [
+    {"description": "Team building event planning", "discussionSummary": "The team discussed organizing a Q3 offsite event...", "decisionResolution": "Decided to schedule for September"}
+  ]
 }
 
-Only include items that were actually discussed in the transcript. Be accurate and concise.`;
+IMPORTANT:
+- Only include existing items that were actually discussed in the transcript
+- Only add new items for substantial topics that were genuinely discussed (not just briefly mentioned)
+- Do NOT create duplicate entries for topics already covered in the existing agenda
+- Be accurate and concise in summaries`;
 
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
@@ -450,17 +476,26 @@ Only include items that were actually discussed in the transcript. Be accurate a
       const data: unknown = await response.json();
       const content = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 
-      let summaries: Record<string, { discussionSummary?: string | null; decisionResolution?: string | null }>;
-      try {
-        summaries = JSON.parse(content) as Record<string, { discussionSummary?: string | null; decisionResolution?: string | null }>;
-      } catch {
-        summaries = {};
+      // Type for the AI response
+      interface AISummaryResponse {
+        existingItems?: Record<string, { discussionSummary?: string | null; decisionResolution?: string | null }>;
+        newItems?: Array<{ description: string; discussionSummary?: string | null; decisionResolution?: string | null }>;
       }
 
-      // Update agenda items with summaries
+      let aiResponse: AISummaryResponse;
+      try {
+        aiResponse = JSON.parse(content) as AISummaryResponse;
+      } catch {
+        aiResponse = { existingItems: {}, newItems: [] };
+      }
+
+      const existingSummaries = aiResponse.existingItems ?? {};
+      const newItemsFromAI = aiResponse.newItems ?? [];
+
+      // Update existing agenda items with summaries
       const updatedItems: Array<typeof agendaItems.$inferSelect> = [];
       for (const item of items) {
-        const summary = summaries[String(item.serialNum)];
+        const summary = existingSummaries[String(item.serialNum)];
         if (summary) {
           const result = await ctx.db
             .update(agendaItems)
@@ -478,9 +513,47 @@ Only include items that were actually discussed in the transcript. Be accurate a
         }
       }
 
+      // Create new agenda items from AI-identified topics
+      const createdItems: Array<typeof agendaItems.$inferSelect> = [];
+      if (newItemsFromAI.length > 0) {
+        // Get the next serial number
+        const maxSerialNum = items.length > 0 
+          ? Math.max(...items.map(i => i.serialNum))
+          : 0;
+
+        for (let i = 0; i < newItemsFromAI.length; i++) {
+          const newItem = newItemsFromAI[i];
+          if (!newItem?.description) continue;
+
+          const result = await ctx.db
+            .insert(agendaItems)
+            .values({
+              botId: input.botId,
+              serialNum: maxSerialNum + i + 1,
+              description: newItem.description,
+              status: "Open",
+              discussionSummary: newItem.discussionSummary ?? null,
+              decisionResolution: newItem.decisionResolution ?? null,
+              source: "ai-generated",
+            })
+            .returning();
+
+          if (result[0]) {
+            createdItems.push(result[0]);
+          }
+        }
+      }
+
+      // Cast source to the expected type for all returned items
+      const allItems = [...updatedItems, ...createdItems].map(item => ({
+        ...item,
+        source: item.source as "manual" | "ai-generated" | null,
+      }));
+
       return {
         updated: updatedItems.length,
-        agendaItems: updatedItems,
+        created: createdItems.length,
+        agendaItems: allItems,
       };
     }),
 });

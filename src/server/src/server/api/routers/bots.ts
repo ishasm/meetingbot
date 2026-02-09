@@ -765,7 +765,44 @@ export const botsRouter = createTRPCRouter({
       const data: unknown = await response.json();
       const summary = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates?.[0]?.content?.parts?.[0]?.text ?? "Unable to generate summary";
 
+      // Save the summary to the database
+      await ctx.db
+        .update(bots)
+        .set({ summary })
+        .where(eq(bots.id, input.id));
+
       return { summary };
+    }),
+
+  getSummary: protectedProcedure
+    .meta({
+      openapi: {
+        method: "GET",
+        path: "/bots/{id}/summary",
+        description: "Get the saved meeting summary for a bot",
+      },
+    })
+    .input(z.object({
+      id: z.number(),
+    }))
+    .output(z.object({
+      summary: z.string().nullable(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const result = await ctx.db
+        .select({ 
+          summary: bots.summary,
+          userId: bots.userId,
+        })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      const bot = result[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      return { summary: bot.summary };
     }),
 
   // ============================================================================
