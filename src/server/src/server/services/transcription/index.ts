@@ -17,6 +17,7 @@ import {
 import { OpenAIProvider } from "./providers/openai";
 import { AssemblyAIProvider } from "./providers/assemblyai";
 import { WhisperSelfHostedProvider } from "./providers/whisper-self-hosted";
+import { SarvamProvider } from "./providers/sarvam";
 
 // Re-export types
 export * from "./types";
@@ -27,7 +28,7 @@ export * from "./types";
 function getDefaultProvider(): TranscriptionProvider {
   // Check environment variable for explicit default
   const envProvider = process.env.TRANSCRIPTION_PROVIDER?.toLowerCase() as TranscriptionProvider | undefined;
-  if (envProvider === "openai" || envProvider === "assemblyai" || envProvider === "whisper-self-hosted") {
+  if (envProvider === "openai" || envProvider === "assemblyai" || envProvider === "whisper-self-hosted" || envProvider === "sarvam") {
     return envProvider;
   }
 
@@ -37,6 +38,9 @@ function getDefaultProvider(): TranscriptionProvider {
   }
   if (process.env.ASSEMBLYAI_API_KEY) {
     return "assemblyai";
+  }
+  if (process.env.SARVAM_API_KEY) {
+    return "sarvam";
   }
   if (process.env.OPENAI_API_KEY) {
     return "openai";
@@ -57,6 +61,8 @@ function createProvider(provider: TranscriptionProvider): ITranscriptionProvider
       return new AssemblyAIProvider();
     case "whisper-self-hosted":
       return new WhisperSelfHostedProvider();
+    case "sarvam":
+      return new SarvamProvider();
   }
 }
 
@@ -81,7 +87,7 @@ export class TranscriptionService {
    * Check which transcription providers are available
    */
   async getAvailableProviders(): Promise<TranscriptionProvider[]> {
-    const providers: TranscriptionProvider[] = ["openai", "assemblyai", "whisper-self-hosted"];
+    const providers: TranscriptionProvider[] = ["openai", "assemblyai", "whisper-self-hosted", "sarvam"];
     const available: TranscriptionProvider[] = [];
 
     for (const name of providers) {

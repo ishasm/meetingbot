@@ -83,9 +83,10 @@ export const env = createEnv({
     AUTH_TRUST_HOST: z.string().optional(),
     NEXTAUTH_TRUST_HOST: z.string().optional(),
     // Transcription provider settings
-    TRANSCRIPTION_PROVIDER: z.enum(["openai", "assemblyai", "whisper-self-hosted"]).optional(),
+    TRANSCRIPTION_PROVIDER: z.enum(["openai", "assemblyai", "whisper-self-hosted", "sarvam"]).optional(),
     OPENAI_API_KEY: z.string().optional(),
     ASSEMBLYAI_API_KEY: z.string().optional(),
+    SARVAM_API_KEY: z.string().optional(),
     WHISPER_API_URL: z.string().optional(),
     WHISPER_API_KEY: z.string().optional(),
     // Gemini API (for action items and summaries)
@@ -134,6 +135,7 @@ export const env = createEnv({
     TRANSCRIPTION_PROVIDER: process.env.TRANSCRIPTION_PROVIDER,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY,
+    SARVAM_API_KEY: process.env.SARVAM_API_KEY,
     WHISPER_API_URL: process.env.WHISPER_API_URL,
     WHISPER_API_KEY: process.env.WHISPER_API_KEY,
     // Gemini API (for action items and summaries)

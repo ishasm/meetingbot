@@ -32,6 +32,7 @@ import {
   Search,
   ExternalLink,
   Filter,
+  Calendar,
 } from "lucide-react";
 
 const priorityColors: Record<string, string> = {
@@ -96,8 +97,10 @@ export default function ActionItemsPage() {
 
   // Create a map of bot IDs to meeting titles
   const meetingTitles: Record<number, string> = {};
+  const meetingDates: Record<number, Date | null> = {};
   meetingsData?.meetings?.forEach((meeting) => {
     meetingTitles[meeting.id] = meeting.meetingTitle;
+    meetingDates[meeting.id] = meeting.scheduledDate ?? meeting.createdAt;
   });
 
   // Filter action items
@@ -185,7 +188,7 @@ export default function ActionItemsPage() {
             </div>
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as typeof statusFilter)}>
+              <Select value={statusFilter} onValueChange={(v: string) => setStatusFilter(v as typeof statusFilter)}>
                 <SelectTrigger className="w-[130px]">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
@@ -195,7 +198,7 @@ export default function ActionItemsPage() {
                   <SelectItem value="completed">Completed</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={priorityFilter} onValueChange={(v) => setPriorityFilter(v as typeof priorityFilter)}>
+              <Select value={priorityFilter} onValueChange={(v: string) => setPriorityFilter(v as typeof priorityFilter)}>
                 <SelectTrigger className="w-[130px]">
                   <SelectValue placeholder="Priority" />
                 </SelectTrigger>
@@ -228,20 +231,32 @@ export default function ActionItemsPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              {Object.entries(groupedItems).map(([botId, items]) => (
-                <div key={botId} className="border rounded-lg overflow-hidden">
-                  <div className="bg-muted/50 px-4 py-2 flex items-center justify-between">
-                    <h3 className="font-medium">
-                      {meetingTitles[Number(botId)] ?? `Meeting #${botId}`}
-                    </h3>
-                    <Link href={`/meetings/${botId}`}>
-                      <Button variant="ghost" size="sm">
-                        <ExternalLink className="h-4 w-4 mr-1" />
-                        View Meeting
-                      </Button>
-                    </Link>
-                  </div>
-                  <Table>
+              {Object.entries(groupedItems).map(([botId, items]) => {
+                const meetingDate = meetingDates[Number(botId)];
+                const hasMeetingDate = meetingDate instanceof Date;
+
+                return (
+                  <div key={botId} className="border rounded-lg overflow-hidden">
+                    <div className="bg-muted/50 px-4 py-2 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <h3 className="font-medium">
+                          {meetingTitles[Number(botId)] ?? `Meeting #${botId}`}
+                        </h3>
+                        {hasMeetingDate && (
+                          <span className="text-muted-foreground text-sm flex items-center gap-1">
+                            <Calendar className="h-3.5 w-3.5" />
+                            {format(meetingDate, "MMM d, yyyy")}
+                          </span>
+                        )}
+                      </div>
+                      <Link href={`/meetings/${botId}`}>
+                        <Button variant="ghost" size="sm">
+                          <ExternalLink className="h-4 w-4 mr-1" />
+                          View Meeting
+                        </Button>
+                      </Link>
+                    </div>
+                    <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-[50px]">Done</TableHead>
@@ -271,7 +286,7 @@ export default function ActionItemsPage() {
                           <TableCell>
                             <Select
                               value={item.priority ?? "medium"}
-                              onValueChange={(v) => handlePriorityChange(item.id, v as "low" | "medium" | "high")}
+                              onValueChange={(v: string) => handlePriorityChange(item.id, v as "low" | "medium" | "high")}
                               disabled={updateMutation.isPending}
                             >
                               <SelectTrigger className="h-8 w-full">
@@ -310,9 +325,10 @@ export default function ActionItemsPage() {
                         </TableRow>
                       ))}
                     </TableBody>
-                  </Table>
-                </div>
-              ))}
+                    </Table>
+                  </div>
+                );
+              })}
             </div>
           )}
         </CardContent>

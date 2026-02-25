@@ -19,7 +19,7 @@ import {
 } from "~/server/services/transcription";
 
 // Transcription provider enum for API validation
-const transcriptionProviderSchema = z.enum(["openai", "assemblyai", "whisper-self-hosted"]);
+const transcriptionProviderSchema = z.enum(["openai", "assemblyai", "whisper-self-hosted", "sarvam"]);
 
 // Transcription segment schema (reusable)
 const transcriptionSegmentApiSchema = z.object({
@@ -573,12 +573,32 @@ export const botsRouter = createTRPCRouter({
         const startTime = Date.now();
         
         // Pass speaker timeframes to improve diarization and map speaker names
-        const result = await service.transcribe(audioBuffer, {
-          provider: input.provider,
+        const baseOptions = {
           language: input.language,
           speakerDiarization: input.speakerDiarization,
           speakerTimeframes: bot.speakerTimeframes ?? undefined,
-        });
+        };
+
+        const result = await (async () => {
+          try {
+            return await service.transcribe(audioBuffer, {
+              ...baseOptions,
+              provider: input.provider,
+            });
+          } catch (primaryError) {
+            // Automatic fallback: if provider wasn't explicitly selected, retry with Sarvam.
+            if (!input.provider && process.env.SARVAM_API_KEY) {
+              console.warn(
+                `Primary transcription failed, retrying with Sarvam fallback: ${(primaryError as Error).message}`,
+              );
+              return await service.transcribe(audioBuffer, {
+                ...baseOptions,
+                provider: "sarvam",
+              });
+            }
+            throw primaryError;
+          }
+        })();
 
         console.log(`Transcription completed in ${Date.now() - startTime}ms, text length: ${result.text.length}`);
         if (result.srt) {

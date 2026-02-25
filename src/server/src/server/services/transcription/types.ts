@@ -5,7 +5,7 @@
 /**
  * Supported transcription providers
  */
-export type TranscriptionProvider = "openai" | "assemblyai" | "whisper-self-hosted";
+export type TranscriptionProvider = "openai" | "assemblyai" | "whisper-self-hosted" | "sarvam";
 
 /**
  * Speaker timeframe from meeting bot recordings
