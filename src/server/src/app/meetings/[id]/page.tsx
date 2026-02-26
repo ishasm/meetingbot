@@ -26,6 +26,7 @@ import {
   Loader2,
   AlertCircle,
   Play,
+  Pause,
   Edit2,
   ExternalLink,
   Save,
@@ -38,6 +39,7 @@ const statusConfig: Record<string, { label: string; variant: "default" | "second
   JOINING_CALL: { label: "Joining", variant: "secondary", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
   IN_WAITING_ROOM: { label: "In Waiting Room", variant: "outline", icon: <Clock className="h-4 w-4" /> },
   IN_CALL: { label: "Recording", variant: "default", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
+  RECORDING_PAUSED: { label: "Recording Paused", variant: "outline", icon: <Pause className="h-4 w-4" /> },
   CALL_ENDED: { label: "Processing", variant: "secondary", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
   DONE: { label: "Complete", variant: "default", icon: <CheckCircle className="h-4 w-4" /> },
   FATAL: { label: "Failed", variant: "destructive", icon: <AlertCircle className="h-4 w-4" /> },
@@ -91,6 +93,19 @@ export default function MeetingDetailPage() {
     onSuccess: () => {
       void utils.bots.getBot.invalidate({ id });
       setIsEditing(false);
+    },
+  });
+
+  // Pause/Resume mutations
+  const pauseBotMutation = api.bots.pauseBot.useMutation({
+    onSuccess: () => {
+      void utils.bots.getBot.invalidate({ id });
+    },
+  });
+
+  const resumeBotMutation = api.bots.resumeBot.useMutation({
+    onSuccess: () => {
+      void utils.bots.getBot.invalidate({ id });
     },
   });
 
@@ -195,6 +210,8 @@ export default function MeetingDetailPage() {
   const isGC = session?.user?.role === "gc";
   const isReadyToDeploy = bot.status === "READY_TO_DEPLOY";
   const isInProgress = !["READY_TO_DEPLOY", "DONE", "FATAL"].includes(bot.status);
+  const isRecordingPaused = bot.status === "RECORDING_PAUSED";
+  const isInCall = bot.status === "IN_CALL";
   const isComplete = bot.status === "DONE";
 
   return (
@@ -406,15 +423,65 @@ export default function MeetingDetailPage() {
 
           {/* Status message for in-progress meetings */}
           {isInProgress && (
-            <div className="mt-4 p-4 bg-blue-50 rounded-lg">
-              <div className="flex items-center gap-2 text-blue-700">
-                <Loader2 className="h-5 w-5 animate-spin" />
-                <p>
-                  {bot.status === "IN_CALL" 
-                    ? "Recording in progress. This page will update automatically when the meeting ends."
-                    : "Bot is connecting to the meeting. Please wait..."}
-                </p>
-              </div>
+            <div className="mt-4 space-y-3">
+              {isRecordingPaused ? (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-amber-700">
+                      <Pause className="h-5 w-5" />
+                      <p className="font-medium">Recording is paused. The bot is still in the meeting.</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => resumeBotMutation.mutate({ id })}
+                      disabled={resumeBotMutation.isPending}
+                      className="bg-green-600 hover:bg-green-700"
+                    >
+                      {resumeBotMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Play className="h-4 w-4 mr-2" />
+                      )}
+                      Resume Recording
+                    </Button>
+                  </div>
+                  {resumeBotMutation.error && (
+                    <p className="text-sm text-red-600 mt-2">{resumeBotMutation.error.message}</p>
+                  )}
+                </div>
+              ) : isInCall ? (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-blue-700">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <p>Recording in progress. This page will update automatically when the meeting ends.</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => pauseBotMutation.mutate({ id })}
+                      disabled={pauseBotMutation.isPending}
+                    >
+                      {pauseBotMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Pause className="h-4 w-4 mr-2" />
+                      )}
+                      Pause Recording
+                    </Button>
+                  </div>
+                  {pauseBotMutation.error && (
+                    <p className="text-sm text-red-600 mt-2">{pauseBotMutation.error.message}</p>
+                  )}
+                </div>
+              ) : (
+                <div className="p-4 bg-blue-50 rounded-lg">
+                  <div className="flex items-center gap-2 text-blue-700">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <p>Bot is connecting to the meeting. Please wait...</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

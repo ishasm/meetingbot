@@ -1,9 +1,10 @@
 import { PutObjectCommand, S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
-import { readFileSync, promises as fsPromises } from "fs";
+import { readFileSync, writeFileSync, existsSync, promises as fsPromises } from "fs";
 import { spawn } from "child_process";
 import { Bot } from "./bot";
 import { randomUUID } from "crypto";
 import { Readable } from "stream";
+import path from "path";
 
 /**
  * Result of uploading a recording to S3
@@ -161,7 +162,88 @@ async function extractAudioFromS3Video(s3Client: S3Client, videoKey: string): Pr
 }
 
 /**
+ * Concatenates multiple MP4 segments into a single file using FFmpeg's concat demuxer.
+ * All segments must have the same codec parameters (which they will since
+ * they're all produced by the same FFmpeg configuration).
+ * 
+ * @param segmentPaths - Array of file paths to the recording segments
+ * @returns Path to the concatenated output file
+ */
+async function concatenateSegments(segmentPaths: string[]): Promise<string> {
+    const dir = path.dirname(segmentPaths[0]!);
+    const concatListPath = path.join(dir, "segments.txt");
+    const outputPath = path.join(dir, "recording_final.mp4");
+
+    const concatContent = segmentPaths
+        .map((p) => `file '${p}'`)
+        .join("\n");
+    writeFileSync(concatListPath, concatContent);
+
+    console.log(`Concatenating ${segmentPaths.length} segments into ${outputPath}`);
+
+    return new Promise((resolve, reject) => {
+        const ffmpeg = spawn("ffmpeg", [
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concatListPath,
+            "-c", "copy",
+            outputPath,
+        ]);
+
+        let stderr = "";
+        ffmpeg.stderr.on("data", (data: Buffer) => {
+            stderr += data.toString();
+        });
+
+        ffmpeg.on("close", (code) => {
+            // Clean up the concat list file
+            fsPromises.unlink(concatListPath).catch(() => {});
+
+            if (code === 0) {
+                console.log("Segment concatenation completed successfully");
+                resolve(outputPath);
+            } else {
+                reject(new Error(`FFmpeg concat exited with code ${code}: ${stderr.slice(-500)}`));
+            }
+        });
+
+        ffmpeg.on("error", (err) => {
+            reject(new Error(`Failed to spawn FFmpeg for concat: ${err.message}`));
+        });
+    });
+}
+
+/**
+ * Reads a recording file with retries for busy/missing files.
+ */
+async function readFileWithRetries(filePath: string, maxRetries: number = 10): Promise<Buffer> {
+    let remaining = maxRetries;
+    while (true) {
+        try {
+            const content = readFileSync(filePath);
+            console.log(`Successfully read recording file: ${filePath}`);
+            return content;
+        } catch (error) {
+            const err = error as NodeJS.ErrnoException;
+            if (err.code === "EBUSY") {
+                console.log("File is busy, retrying...");
+                await new Promise(r => setTimeout(r, 1000));
+            } else if (err.code === "ENOENT") {
+                if (remaining <= 0)
+                    throw new Error(`File not found after ${maxRetries} retries: ${filePath}`);
+                console.log(`File not found, retrying ${remaining--} more times`);
+                await new Promise(r => setTimeout(r, 1000));
+            } else {
+                throw error;
+            }
+        }
+    }
+}
+
+/**
  * Uploads a recording to S3, including both video and extracted audio.
+ * Handles multi-segment recordings by concatenating segments first.
  * 
  * @param s3Client - The S3 client instance
  * @param bot - The bot instance containing recording info
@@ -169,44 +251,22 @@ async function extractAudioFromS3Video(s3Client: S3Client, videoKey: string): Pr
  */
 export async function uploadRecordingToS3(s3Client: S3Client, bot: Bot): Promise<UploadResult> {
 
-    // Attempt to read the file path. Allow for time for the file to become available.
-    const filePath = bot.getRecordingPath();
-    let fileContent: Buffer;
-    let i = 10;
+    const segments = bot.getRecordingSegments();
+    let filePath: string;
+    let cleanupPaths: string[] = [];
 
-    while (true) {
-        try {
-
-            fileContent = readFileSync(filePath);
-            console.log("Successfully read recording file");
-            break; // Exit loop if readFileSync is successful
-
-        } catch (error) {
-            const err = error as NodeJS.ErrnoException;
-
-            // Could not read file.
-
-            // Busy File
-            if (err.code === "EBUSY") {
-                console.log("File is busy, retrying...");
-                await new Promise(r => setTimeout(r, 1000)); // Wait for 1 second before retrying
-
-                // File DNE
-            } else if (err.code === "ENOENT") {
-
-                // Throw an Error
-                if (i < 0)
-                    throw new Error("File not found after multiple retries");
-
-                console.log("File not found, retrying ", i--, " more times");
-                await new Promise(r => setTimeout(r, 1000)); // Wait for 1 second before retrying
-
-                // Other Error
-            } else {
-                throw error; // Rethrow if it's a different error
-            }
-        }
+    if (segments.length > 1) {
+        // Multiple segments: concatenate them first
+        console.log(`Found ${segments.length} recording segments, concatenating...`);
+        filePath = await concatenateSegments(segments);
+        // Clean up all segment files + the concatenated file after upload
+        cleanupPaths = [...segments, filePath];
+    } else {
+        filePath = segments[0] ?? bot.getRecordingPath();
+        cleanupPaths = [filePath];
     }
+
+    const fileContent = await readFileWithRetries(filePath);
 
     // Create UUID and initialize keys
     const uuid = randomUUID();
@@ -272,12 +332,16 @@ export async function uploadRecordingToS3(s3Client: S3Client, bot: Bot): Promise
         console.log("Video upload succeeded, but audio extraction failed. Continuing...");
     }
 
-    // Clean up local file
-    try {
-        await fsPromises.unlink(filePath);
-        console.log("Local recording file cleaned up");
-    } catch (error) {
-        console.error("Error cleaning up local file:", error);
+    // Clean up all local recording files (segments + concatenated)
+    for (const cleanupPath of cleanupPaths) {
+        try {
+            if (existsSync(cleanupPath)) {
+                await fsPromises.unlink(cleanupPath);
+                console.log(`Cleaned up: ${cleanupPath}`);
+            }
+        } catch (error) {
+            console.error(`Error cleaning up ${cleanupPath}:`, error);
+        }
     }
 
     return {

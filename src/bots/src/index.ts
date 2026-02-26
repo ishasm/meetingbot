@@ -45,10 +45,12 @@ export const main = async () => {
 
   // Do not start heartbeat in development
   if (process.env.NODE_ENV !== "development") {
-    // Start heartbeat in the background
+    // Start heartbeat in the background, with action callback for pause/resume
     console.log("Starting heartbeat");
     const heartbeatInterval = botData.heartbeatInterval ?? 5000; // Default to 5 seconds if not set
-    startHeartbeat(botId, heartbeatController.signal, heartbeatInterval);
+    startHeartbeat(botId, heartbeatController.signal, heartbeatInterval, async (action) => {
+      await bot.handleServerAction(action);
+    });
   }
 
   // Report READY_TO_DEPLOY event

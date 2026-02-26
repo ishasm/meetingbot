@@ -226,15 +226,21 @@ export const status = z.enum([
   "JOINING_CALL",
   "IN_WAITING_ROOM",
   "IN_CALL",
+  "RECORDING_PAUSED",
   "CALL_ENDED",
   "DONE",
   "FATAL",
 ]);
 export type Status = z.infer<typeof status>;
 
+// Pending actions that can be sent to a bot via the heartbeat response
+export const pendingActionSchema = z.enum(["pause", "resume"]);
+export type PendingAction = z.infer<typeof pendingActionSchema>;
+
 // Event codes include all status codes plus additional event-only codes
 const allEventCodes = [
   ...status.options,
+  "RECORDING_RESUMED",
   "PARTICIPANT_JOIN",
   "PARTICIPANT_LEAVE",
   "LOG",
@@ -254,6 +260,10 @@ export const EVENT_DESCRIPTIONS = {
     "The bot has acknowledged the request to join the call, and is in the process of connecting.",
   IN_WAITING_ROOM: "The bot is in the waiting room of the meeting.",
   IN_CALL: "The bot is in the meeting, and is currently recording audio.",
+  RECORDING_PAUSED:
+    "The bot recording has been paused. The bot remains in the meeting but is not recording.",
+  RECORDING_RESUMED:
+    "The bot recording has been resumed after a pause.",
   CALL_ENDED:
     "The bot has left the call. The data.sub_code and data.description will contain the reason for why the call ended.",
   DONE: "The bot has shut down.",
@@ -303,6 +313,7 @@ export const bots = pgTable("bots", {
   heartbeatInterval: integer("heartbeat_interval").notNull(),
   automaticLeave: json("automatic_leave").$type<AutomaticLeave>().notNull(),
   callbackUrl: varchar("callback_url", { length: 1024 }),
+  pendingAction: varchar("pending_action", { length: 20 }).$type<PendingAction | null>(),
   // timestamps
   createdAt: timestamp("created_at").defaultNow(),
 });

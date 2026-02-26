@@ -5,9 +5,11 @@ export interface BotInterface {
   readonly settings: BotConfig;
   onEvent: (eventType: EventCode, data?: any) => Promise<void>;
   getRecordingPath(): string;
+  getRecordingSegments(): string[];
   getContentType(): string;
   run(): Promise<void>;
   screenshot(fName?: string): Promise<void>;
+  handleServerAction(action: string): Promise<void>;
 
   //
   joinMeeting(): Promise<any>;
@@ -82,6 +84,14 @@ export class Bot implements BotInterface {
 
   getSpeakerTimeframes(): SpeakerTimeframe[] {
     throw new Error("Method not implemented.");
+  }
+
+  getRecordingSegments(): string[] {
+    return [this.getRecordingPath()];
+  }
+
+  async handleServerAction(_action: string): Promise<void> {
+    // Override in platform-specific bots that support pause/resume
   }
 
   /**

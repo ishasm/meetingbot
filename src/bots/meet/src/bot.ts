@@ -155,6 +155,14 @@ export class MeetsBot extends Bot {
 
   private ffmpegProcess: ChildProcessWithoutNullStreams | null;
 
+  // Pause/resume state
+  private isPaused: boolean = false;
+  private pulseAudioConfigured: boolean = false;
+  private segmentIndex: number = 0;
+  private recordingSegmentPaths: string[] = [];
+  private pauseAccumulatedMs: number = 0;
+  private pauseStartedAt: number = 0;
+
   /**
    * 
    * @param botSettings Bot Settings as Passed in the API call.
@@ -165,7 +173,7 @@ export class MeetsBot extends Bot {
     onEvent: (eventType: EventCode, data?: any) => Promise<void>
   ) {
     super(botSettings, onEvent);
-    this.recordingPath = path.resolve(__dirname, "recording.mp4");
+    this.recordingPath = path.resolve(__dirname, "recording_segment_0.mp4");
 
     this.browserArgs = [
       "--incognito",
@@ -225,7 +233,7 @@ export class MeetsBot extends Bot {
    */
   getSpeakerTimeframes(): SpeakerTimeframe[] {
     // Close any still-active speaking ranges
-    const endTime = Date.now() - this.recordingStartedAt;
+    const endTime = Date.now() - this.recordingStartedAt - this.pauseAccumulatedMs;
     this.activeSpeakers.forEach((state, speaker) => {
       this.endSpeakerRange(speaker, endTime);
     });
@@ -339,7 +347,8 @@ export class MeetsBot extends Bot {
    * Should be called periodically (every second).
    */
   private checkForSilentSpeakers() {
-    const now = Date.now() - this.recordingStartedAt;
+    if (this.isPaused) return;
+    const now = Date.now() - this.recordingStartedAt - this.pauseAccumulatedMs;
     
     this.activeSpeakers.forEach((state, speaker) => {
       if (now - state.lastActivity > this.SILENCE_TIMEOUT_MS) {
@@ -607,18 +616,14 @@ export class MeetsBot extends Bot {
    * 
    * @returns {void}
    */
-  async startRecording() {
+  private configurePulseAudio() {
+    if (this.pulseAudioConfigured) return;
 
-    console.log('Attempting to start the recording ... @', this.getRecordingPath());
-    if (this.ffmpegProcess) return console.log('Recording already started.');
-
-    // Check and configure PulseAudio before starting recording
     try {
       const { execSync } = require('child_process');
       
       console.log('=== PulseAudio Diagnostics ===');
       
-      // Check if PulseAudio is running
       try {
         const paStatus = execSync('pactl info 2>&1', { encoding: 'utf8' });
         console.log('PulseAudio is running');
@@ -626,80 +631,66 @@ export class MeetsBot extends Bot {
       } catch (err) {
         console.error('PulseAudio is not running! Starting it...');
         execSync('pulseaudio --start --exit-idle-time=-1 2>&1', { encoding: 'utf8' });
-        await new Promise(r => setTimeout(r, 1000)); // Wait for PA to start
       }
       
-      // List audio sources
       const paSources = execSync('pactl list sources short 2>&1', { encoding: 'utf8' });
       console.log('Available audio sources:');
       console.log(paSources);
       
-      // List audio sinks (outputs)
       const paSinks = execSync('pactl list sinks short 2>&1', { encoding: 'utf8' });
       console.log('Available audio sinks:');
       console.log(paSinks);
       
-      // Create a null sink and its monitor for capturing browser audio
       try {
         console.log('Creating null sink for audio capture...');
         execSync('pactl load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description="Virtual_Speaker" 2>&1', { encoding: 'utf8' });
         console.log('Null sink created successfully');
         
-        // Set it as default sink so browser outputs to it
         execSync('pactl set-default-sink virtual_speaker 2>&1', { encoding: 'utf8' });
         console.log('Set virtual_speaker as default sink');
       } catch (err) {
         console.log('Note: Could not create null sink (may already exist):', err);
       }
       
-      // List sources again to see the monitor
       const paSourcesAfter = execSync('pactl list sources short 2>&1', { encoding: 'utf8' });
       console.log('Audio sources after null sink creation:');
       console.log(paSourcesAfter);
       
       console.log('=== End PulseAudio Diagnostics ===');
+      this.pulseAudioConfigured = true;
     } catch (err) {
       console.warn('Warning: Could not configure PulseAudio:', err);
     }
+  }
 
+  private spawnFFmpeg() {
     this.ffmpegProcess = spawn('ffmpeg', this.getFFmpegParams());
-
     console.log('Spawned a subprocess to record: pid=', this.ffmpegProcess.pid);
 
-    // Report any data / errors (DEBUG, since it also prints that data is available).
-    this.ffmpegProcess.stderr.on('data', (data) => {
-      // console.error(`ffmpeg: ${data}`);
-
-      // Log that we got data, and the recording started.
+    this.ffmpegProcess.stderr.on('data', (data: Buffer) => {
       if (!this.startedRecording) {
         console.log('Recording Started.');
         this.startedRecording = true;
-        // Set the recording start timestamp for speaker timeframe calculation
         this.recordingStartedAt = Date.now();
         console.log(`Recording started at timestamp: ${this.recordingStartedAt}`);
       }
     });
 
-    // Log Output of stderr - ALWAYS log for audio debugging
-    // Store stderr output for debugging
     let stderrBuffer = '';
-    this.ffmpegProcess.stderr.on('data', (data) => {
+    this.ffmpegProcess.stderr.on('data', (data: Buffer) => {
       const text = data.toString();
       stderrBuffer += text;
       
-      // Log important messages
       if (text.includes('error') || text.includes('Error') || text.includes('Invalid') || 
           text.includes('failed') || text.includes('Failed')) {
         console.error(`ffmpeg stderr: ${text}`);
       }
       
-      // Log audio stream info
       if (text.includes('Audio:') || text.includes('Stream #')) {
         console.log(`ffmpeg: ${text.trim()}`);
       }
     });
 
-    // Report when the process exits
     this.ffmpegProcess.on('exit', (code) => {
       console.log(`ffmpeg exited with code ${code}`);
       if (code !== 0 && code !== null) {
@@ -707,6 +698,14 @@ export class MeetsBot extends Bot {
       }
       this.ffmpegProcess = null;
     });
+  }
+
+  async startRecording() {
+    console.log('Attempting to start the recording ... @', this.getRecordingPath());
+    if (this.ffmpegProcess) return console.log('Recording already started.');
+
+    this.configurePulseAudio();
+    this.spawnFFmpeg();
 
     console.log('Started FFMPEG Process.')
   }
@@ -760,6 +759,79 @@ export class MeetsBot extends Bot {
 
     // Continue
     return promiseResult;
+  }
+
+  async pauseRecording(): Promise<void> {
+    if (this.isPaused) {
+      console.log('Recording is already paused.');
+      return;
+    }
+    if (!this.ffmpegProcess) {
+      console.log('No active recording to pause.');
+      return;
+    }
+
+    console.log(`Pausing recording (segment ${this.segmentIndex})...`);
+
+    await this.stopRecording();
+
+    this.recordingSegmentPaths.push(this.getRecordingPath());
+    this.isPaused = true;
+    this.pauseStartedAt = Date.now();
+
+    // Pause speaker detection -- speakers during pause shouldn't be tracked
+    this.activeSpeakers.forEach((state, speaker) => {
+      const elapsedMs = Date.now() - this.recordingStartedAt - this.pauseAccumulatedMs;
+      this.endSpeakerRange(speaker, elapsedMs);
+    });
+
+    await this.onEvent(EventCode.RECORDING_PAUSED);
+    console.log('Recording paused.');
+  }
+
+  async resumeRecording(): Promise<void> {
+    if (!this.isPaused) {
+      console.log('Recording is not paused.');
+      return;
+    }
+
+    console.log('Resuming recording...');
+
+    this.pauseAccumulatedMs += Date.now() - this.pauseStartedAt;
+    this.isPaused = false;
+
+    this.segmentIndex++;
+    this.recordingPath = path.resolve(__dirname, `recording_segment_${this.segmentIndex}.mp4`);
+
+    this.spawnFFmpeg();
+
+    await this.onEvent(EventCode.RECORDING_RESUMED);
+    // Restore bot status to IN_CALL so the UI shows recording state
+    await this.onEvent(EventCode.IN_CALL);
+    console.log(`Recording resumed as segment ${this.segmentIndex}.`);
+  }
+
+  async handleServerAction(action: string): Promise<void> {
+    switch (action) {
+      case 'pause':
+        await this.pauseRecording();
+        break;
+      case 'resume':
+        await this.resumeRecording();
+        break;
+      default:
+        console.warn(`Unknown server action: ${action}`);
+    }
+  }
+
+  getRecordingSegments(): string[] {
+    const segments = [...this.recordingSegmentPaths];
+    // Include the current/last segment if it's not already tracked
+    const currentPath = this.getRecordingPath();
+    if (!segments.includes(currentPath) && fs.existsSync(currentPath)) {
+      segments.push(currentPath);
+    }
+    return segments;
   }
 
   async screenshot(fName: string = 'screenshot.png') {
@@ -838,6 +910,9 @@ export class MeetsBot extends Bot {
     // Start Recording, Yes by default
     console.log("Starting Recording");
     this.startRecording();
+
+    // Report IN_CALL status so the dashboard shows recording state
+    await this.onEvent(EventCode.IN_CALL);
 
     console.log("Waiting for the 'Others might see you differently' popup...");
     await this.handleInfoPopup();
@@ -991,7 +1066,8 @@ export class MeetsBot extends Bot {
       "registerParticipantSpeaking",
       (participant: Participant) => {
         this.lastActivity = Date.now();
-        const relativeTimestamp = Date.now() - this.recordingStartedAt;
+        if (this.isPaused) return;
+        const relativeTimestamp = Date.now() - this.recordingStartedAt - this.pauseAccumulatedMs;
         
         // Use memory-efficient range-based tracking with throttling
         this.updateSpeakerActivity(participant.name, relativeTimestamp);
@@ -1410,7 +1486,7 @@ export class MeetsBot extends Bot {
     }
 
     // Close any active speaker ranges before ending
-    const endTime = Date.now() - this.recordingStartedAt;
+    const endTime = Date.now() - this.recordingStartedAt - this.pauseAccumulatedMs;
     this.activeSpeakers.forEach((state, speaker) => {
       this.endSpeakerRange(speaker, endTime);
     });

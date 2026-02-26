@@ -8,6 +8,7 @@ import {
   insertEventSchema,
   status,
   speakerTimeframeSchema,
+  pendingActionSchema,
 } from "../../db/schema";
 import { eq, sql, and, notInArray } from "drizzle-orm";
 import { deployBot, shouldDeployImmediately } from "../services/botDeployment";
@@ -360,25 +361,32 @@ export const botsRouter = createTRPCRouter({
         method: "POST",
         path: "/bots/{id}/heartbeat",
         description:
-          "Called every few seconds by bot scripts to indicate that the bot is still running",
+          "Called every few seconds by bot scripts to indicate that the bot is still running. Returns any pending action (pause/resume) for the bot.",
       },
     })
     .input(z.object({ id: z.number() }))
-    .output(z.object({ success: z.boolean() }))
+    .output(z.object({ success: z.boolean(), action: pendingActionSchema.nullable() }))
     .mutation(async ({ input, ctx }) => {
       console.log("Heartbeat received for bot", input.id);
-      // Update bot's last heartbeat
-      const botUpdate = await ctx.db
-        .update(bots)
-        .set({ lastHeartbeat: new Date() })
-        .where(eq(bots.id, input.id))
-        .returning();
 
-      if (!botUpdate[0]) {
+      const botRow = await ctx.db
+        .select({ pendingAction: bots.pendingAction })
+        .from(bots)
+        .where(eq(bots.id, input.id));
+
+      if (!botRow[0]) {
         throw new Error("Bot not found");
       }
 
-      return { success: true };
+      const action = botRow[0].pendingAction ?? null;
+
+      // Update heartbeat and clear the pending action atomically
+      await ctx.db
+        .update(bots)
+        .set({ lastHeartbeat: new Date(), pendingAction: null })
+        .where(eq(bots.id, input.id));
+
+      return { success: true, action };
     }),
 
   reportEvent: publicProcedure
@@ -430,6 +438,64 @@ export const botsRouter = createTRPCRouter({
         botId: input.id,
         db: ctx.db,
       });
+    }),
+
+  pauseBot: protectedProcedure
+    .meta({
+      openapi: {
+        method: "POST",
+        path: "/bots/{id}/pause",
+        description: "Pause the bot's recording. The bot stays in the meeting but stops recording.",
+      },
+    })
+    .input(z.object({ id: z.number() }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const bot = await ctx.db.select().from(bots).where(eq(bots.id, input.id));
+
+      if (!bot[0] || bot[0].userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      if (bot[0].status !== "IN_CALL") {
+        throw new Error("Bot must be in a call to pause recording");
+      }
+
+      await ctx.db
+        .update(bots)
+        .set({ pendingAction: "pause" })
+        .where(eq(bots.id, input.id));
+
+      return { success: true };
+    }),
+
+  resumeBot: protectedProcedure
+    .meta({
+      openapi: {
+        method: "POST",
+        path: "/bots/{id}/resume",
+        description: "Resume the bot's recording after a pause.",
+      },
+    })
+    .input(z.object({ id: z.number() }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const bot = await ctx.db.select().from(bots).where(eq(bots.id, input.id));
+
+      if (!bot[0] || bot[0].userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      if (bot[0].status !== "RECORDING_PAUSED") {
+        throw new Error("Bot recording is not paused");
+      }
+
+      await ctx.db
+        .update(bots)
+        .set({ pendingAction: "resume" })
+        .where(eq(bots.id, input.id));
+
+      return { success: true };
     }),
 
   getActiveBotCount: protectedProcedure

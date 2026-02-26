@@ -10,12 +10,22 @@ dotenv.config({ path: 'test.env' });
 export const startHeartbeat = async (
   botId: number,
   abortSignal: AbortSignal,
-  intervalMs: number = 5000
+  intervalMs: number = 5000,
+  onAction?: (action: string) => Promise<void>
 ) => {
   while (!abortSignal.aborted) {
     try {
-      await trpc.bots.heartbeat.mutate({ id: botId });
+      const response = await trpc.bots.heartbeat.mutate({ id: botId });
       console.log(`[${new Date().toISOString()}] Heartbeat sent`);
+
+      if (response.action && onAction) {
+        console.log(`[${new Date().toISOString()}] Received server action: ${response.action}`);
+        try {
+          await onAction(response.action);
+        } catch (actionError) {
+          console.error("Failed to handle server action:", actionError);
+        }
+      }
     } catch (error) {
 
       // Do not log the entire heartbeat error if, in local, the user has set HEARTBEAT_DEBUG to false.
