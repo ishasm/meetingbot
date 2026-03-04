@@ -783,7 +783,7 @@ export const botsRouter = createTRPCRouter({
       openapi: {
         method: "POST",
         path: "/bots/{id}/summary",
-        description: "Generate a summary of the meeting transcription using AI",
+        description: "Generate a structured summary of the meeting transcription using AI",
       },
     })
     .input(z.object({
@@ -792,9 +792,12 @@ export const botsRouter = createTRPCRouter({
     }))
     .output(z.object({
       summary: z.string(),
+      summaryOverview: z.string().nullable(),
+      summaryMinutes: z.string().nullable(),
+      summaryActionItems: z.string().nullable(),
+      summaryDecisions: z.string().nullable(),
     }))
     .mutation(async ({ input, ctx }) => {
-      // Get the bot and verify ownership
       const result = await ctx.db
         .select({ 
           transcription: bots.transcription,
@@ -813,32 +816,35 @@ export const botsRouter = createTRPCRouter({
         throw new Error("No transcription available. Please transcribe the recording first.");
       }
 
-      // Check if Gemini is available for summarization
       const geminiKey = process.env.GEMINI_API_KEY;
       if (!geminiKey) {
         throw new Error("Gemini API key not configured for summary generation");
       }
 
-      const systemPrompt = input.customPrompt ?? 
-        "You are a helpful assistant that summarizes meeting transcripts. Provide a concise summary including key discussion points, decisions made, and action items.";
+      const systemPrompt = input.customPrompt ??
+        `You are a helpful assistant that summarizes meeting transcripts into structured sections.
+Return a JSON object with these four keys:
+- "summary": A high-level overview of the meeting (2-4 paragraphs in markdown)
+- "minutes": Detailed meeting minutes covering what was discussed, in chronological order (markdown with bullet points or numbered list)
+- "actionItems": Extracted action items with assignees where mentioned (markdown bullet list)
+- "decisions": Key decisions and resolutions made during the meeting (markdown bullet list)
+
+Each value should be a markdown-formatted string. Be thorough but concise.`;
 
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `${systemPrompt}\n\nPlease summarize this meeting transcript for "${bot.meetingTitle}":\n\n${bot.transcription}`,
-                  },
-                ],
-              },
-            ],
+            contents: [{
+              parts: [{
+                text: `${systemPrompt}\n\nGenerate a structured summary for this meeting transcript of "${bot.meetingTitle}":\n\n${bot.transcription}`,
+              }],
+            }],
+            generationConfig: {
+              responseMimeType: "application/json",
+            },
           }),
         }
       );
@@ -849,15 +855,57 @@ export const botsRouter = createTRPCRouter({
       }
 
       const data: unknown = await response.json();
-      const summary = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates?.[0]?.content?.parts?.[0]?.text ?? "Unable to generate summary";
+      const content = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 
-      // Save the summary to the database
+      let summaryOverview: string | null = null;
+      let summaryMinutes: string | null = null;
+      let summaryActionItems: string | null = null;
+      let summaryDecisions: string | null = null;
+      let legacySummary: string;
+
+      try {
+        const parsed = JSON.parse(content) as {
+          summary?: string;
+          minutes?: string;
+          actionItems?: string;
+          action_items?: string;
+          decisions?: string;
+        };
+        summaryOverview = parsed.summary ?? null;
+        summaryMinutes = parsed.minutes ?? null;
+        summaryActionItems = parsed.actionItems ?? parsed.action_items ?? null;
+        summaryDecisions = parsed.decisions ?? null;
+
+        // Build legacy summary from all sections for backward compatibility
+        const parts: string[] = [];
+        if (summaryOverview) parts.push(`## Summary\n\n${summaryOverview}`);
+        if (summaryMinutes) parts.push(`## Minutes\n\n${summaryMinutes}`);
+        if (summaryActionItems) parts.push(`## Action Items\n\n${summaryActionItems}`);
+        if (summaryDecisions) parts.push(`## Decisions\n\n${summaryDecisions}`);
+        legacySummary = parts.join("\n\n---\n\n");
+      } catch {
+        // If JSON parsing fails, treat entire content as legacy summary
+        legacySummary = content;
+      }
+
       await ctx.db
         .update(bots)
-        .set({ summary })
+        .set({
+          summary: legacySummary,
+          summaryOverview,
+          summaryMinutes,
+          summaryActionItems,
+          summaryDecisions,
+        })
         .where(eq(bots.id, input.id));
 
-      return { summary };
+      return {
+        summary: legacySummary,
+        summaryOverview,
+        summaryMinutes,
+        summaryActionItems,
+        summaryDecisions,
+      };
     }),
 
   getSummary: protectedProcedure
@@ -873,11 +921,19 @@ export const botsRouter = createTRPCRouter({
     }))
     .output(z.object({
       summary: z.string().nullable(),
+      summaryOverview: z.string().nullable(),
+      summaryMinutes: z.string().nullable(),
+      summaryActionItems: z.string().nullable(),
+      summaryDecisions: z.string().nullable(),
     }))
     .query(async ({ input, ctx }) => {
       const result = await ctx.db
         .select({ 
           summary: bots.summary,
+          summaryOverview: bots.summaryOverview,
+          summaryMinutes: bots.summaryMinutes,
+          summaryActionItems: bots.summaryActionItems,
+          summaryDecisions: bots.summaryDecisions,
           userId: bots.userId,
         })
         .from(bots)
@@ -888,7 +944,31 @@ export const botsRouter = createTRPCRouter({
         throw new Error("Bot not found");
       }
 
-      return { summary: bot.summary };
+      let { summaryOverview, summaryMinutes, summaryActionItems, summaryDecisions } = bot;
+
+      // If structured fields are empty but legacy summary contains JSON, parse it server-side
+      if (!summaryOverview && !summaryMinutes && !summaryActionItems && !summaryDecisions && bot.summary) {
+        try {
+          const trimmed = bot.summary.trim();
+          if (trimmed.startsWith("{")) {
+            const parsed = JSON.parse(trimmed) as Record<string, string>;
+            summaryOverview = parsed.summary ?? null;
+            summaryMinutes = parsed.minutes ?? null;
+            summaryActionItems = parsed.actionItems ?? parsed.action_items ?? null;
+            summaryDecisions = parsed.decisions ?? null;
+          }
+        } catch {
+          // Not valid JSON, keep as legacy
+        }
+      }
+
+      return {
+        summary: bot.summary,
+        summaryOverview,
+        summaryMinutes,
+        summaryActionItems,
+        summaryDecisions,
+      };
     }),
 
   // ============================================================================

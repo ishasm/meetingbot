@@ -8,7 +8,7 @@ import {
   selectAgendaItemSchema,
   updateAgendaItemSchema,
 } from "../../db/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 
 export const agendaItemsRouter = createTRPCRouter({
   // Get all agenda items for a specific meeting
@@ -57,6 +57,7 @@ export const agendaItemsRouter = createTRPCRouter({
           sadhguruComments: agendaItems.sadhguruComments,
           attachments: agendaItems.attachments,
           source: agendaItems.source,
+          category: agendaItems.category,
           createdAt: agendaItems.createdAt,
           updatedAt: agendaItems.updatedAt,
           ownerName: attendees.name,
@@ -94,8 +95,8 @@ export const agendaItemsRouter = createTRPCRouter({
           .filter((o) => o.name !== "Unknown");
         return {
           ...item,
-          // Cast source to the expected type
           source: item.source as "manual" | "ai-generated" | null,
+          category: item.category as "Policy" | "Budget Approval" | "Follow-up" | "General" | null,
           ownerNames,
         };
       });
@@ -115,6 +116,7 @@ export const agendaItemsRouter = createTRPCRouter({
     .input(z.object({
       status: z.enum(["Open", "Closed"]).optional(),
       ownerAttendeeId: z.number().optional(),
+      category: z.string().optional(),
     }).optional())
     .output(z.object({
       agendaItems: z.array(selectAgendaItemSchema.extend({
@@ -143,6 +145,7 @@ export const agendaItemsRouter = createTRPCRouter({
           sadhguruComments: agendaItems.sadhguruComments,
           attachments: agendaItems.attachments,
           source: agendaItems.source,
+          category: agendaItems.category,
           createdAt: agendaItems.createdAt,
           updatedAt: agendaItems.updatedAt,
           ownerName: attendees.name,
@@ -183,8 +186,8 @@ export const agendaItemsRouter = createTRPCRouter({
           .filter((o) => o.name !== "Unknown");
         return {
           ...item,
-          // Cast source to the expected type
           source: item.source as "manual" | "ai-generated" | null,
+          category: item.category as "Policy" | "Budget Approval" | "Follow-up" | "General" | null,
           ownerNames,
         };
       });
@@ -196,6 +199,9 @@ export const agendaItemsRouter = createTRPCRouter({
       }
       if (input?.ownerAttendeeId) {
         filtered = filtered.filter((item) => item.ownerAttendeeId === input.ownerAttendeeId);
+      }
+      if (input?.category) {
+        filtered = filtered.filter((item) => item.category === input.category);
       }
 
       return { agendaItems: filtered };
@@ -252,6 +258,7 @@ export const agendaItemsRouter = createTRPCRouter({
           ownerAttendeeIds: input.ownerAttendeeIds ?? [],
           sadhguruComments: input.sadhguruComments ?? null,
           attachments: input.attachments ?? [],
+          category: input.category ?? null,
         })
         .returning();
 
@@ -263,6 +270,7 @@ export const agendaItemsRouter = createTRPCRouter({
       return {
         ...item,
         source: item.source as "manual" | "ai-generated" | null,
+        category: item.category as "Policy" | "Budget Approval" | "Follow-up" | "General" | null,
       };
     }),
 
@@ -308,6 +316,7 @@ export const agendaItemsRouter = createTRPCRouter({
           ...(updates.ownerAttendeeIds !== undefined && { ownerAttendeeIds: updates.ownerAttendeeIds }),
           ...(updates.sadhguruComments !== undefined && { sadhguruComments: updates.sadhguruComments }),
           ...(updates.attachments !== undefined && { attachments: updates.attachments }),
+          ...(updates.category !== undefined && { category: updates.category }),
           updatedAt: new Date(),
         })
         .where(eq(agendaItems.id, id))
@@ -321,6 +330,7 @@ export const agendaItemsRouter = createTRPCRouter({
       return {
         ...item,
         source: item.source as "manual" | "ai-generated" | null,
+        category: item.category as "Policy" | "Budget Approval" | "Follow-up" | "General" | null,
       };
     }),
 
@@ -351,6 +361,41 @@ export const agendaItemsRouter = createTRPCRouter({
       }
 
       await ctx.db.delete(agendaItems).where(eq(agendaItems.id, input.id));
+
+      return { success: true };
+    }),
+
+  reorder: protectedProcedure
+    .input(z.object({
+      botId: z.number(),
+      items: z.array(z.object({
+        id: z.number(),
+        serialNum: z.number(),
+      })),
+    }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const botResult = await ctx.db
+        .select({ userId: bots.userId })
+        .from(bots)
+        .where(eq(bots.id, input.botId));
+
+      const bot = botResult[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Meeting not found");
+      }
+
+      for (const item of input.items) {
+        await ctx.db
+          .update(agendaItems)
+          .set({ serialNum: item.serialNum })
+          .where(
+            and(
+              eq(agendaItems.id, item.id),
+              eq(agendaItems.botId, input.botId)
+            )
+          );
+      }
 
       return { success: true };
     }),
@@ -544,10 +589,10 @@ IMPORTANT:
         }
       }
 
-      // Cast source to the expected type for all returned items
       const allItems = [...updatedItems, ...createdItems].map(item => ({
         ...item,
         source: item.source as "manual" | "ai-generated" | null,
+        category: item.category as "Policy" | "Budget Approval" | "Follow-up" | "General" | null,
       }));
 
       return {

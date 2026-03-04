@@ -48,6 +48,7 @@ import {
   X,
   Loader2,
   ExternalLink,
+  Tag,
 } from "lucide-react";
 import { cn } from "~/lib/utils";
 import Link from "next/link";
@@ -84,6 +85,7 @@ interface AgendaItem {
   ownerAttendeeIds?: number[] | null;
   sadhguruComments: string | null;
   attachments: string[] | null;
+  category?: string | null;
   createdAt: Date | null;
   updatedAt: Date | null;
   ownerName?: string | null;
@@ -136,6 +138,7 @@ export function AgendaItemDetailModal({
         discussionSummary: item.discussionSummary,
         decisionResolution: item.decisionResolution,
         sadhguruComments: item.sadhguruComments,
+        category: item.category,
         ownerAttendeeIds: item.ownerAttendeeIds ?? (item.ownerAttendeeId ? [item.ownerAttendeeId] : []),
       });
       setHasChanges(false);
@@ -172,6 +175,9 @@ export function AgendaItemDetailModal({
     }
     if (editedItem.sadhguruComments !== item.sadhguruComments) {
       updates.sadhguruComments = editedItem.sadhguruComments ?? null;
+    }
+    if (editedItem.category !== item.category) {
+      updates.category = editedItem.category ?? null;
     }
     
     const currentOwnerIds = item.ownerAttendeeIds ?? (item.ownerAttendeeId ? [item.ownerAttendeeId] : []);
@@ -352,6 +358,29 @@ export function AgendaItemDetailModal({
             </div>
           </div>
 
+          {/* Category */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium flex items-center gap-2">
+              <Tag className="h-4 w-4 text-muted-foreground" />
+              Category
+            </Label>
+            <Select
+              value={editedItem.category ?? "none"}
+              onValueChange={(v) => handleFieldChange("category", v === "none" ? null : v)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select category" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No category</SelectItem>
+                <SelectItem value="Policy">Policy</SelectItem>
+                <SelectItem value="Budget Approval">Budget Approval</SelectItem>
+                <SelectItem value="Follow-up">Follow-up</SelectItem>
+                <SelectItem value="General">General</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* Selected owners display */}
           {ownerIds.length > 0 && (
             <div className="flex flex-wrap gap-1">
@@ -424,11 +453,11 @@ export function AgendaItemDetailModal({
             </div>
           </div>
 
-          {/* Sadhguru Comments */}
+          {/* Guidance */}
           <div className="space-y-2">
             <Label className="text-sm font-medium flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-purple-600" />
-              Sadhguru Comments
+              Guidance
             </Label>
             <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-1">
               <Textarea
@@ -436,7 +465,7 @@ export function AgendaItemDetailModal({
                 onChange={(e) => handleFieldChange("sadhguruComments", e.target.value)}
                 rows={2}
                 className="resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
-                placeholder="Comments from Sadhguru..."
+                placeholder="Enter guidance..."
               />
             </div>
           </div>

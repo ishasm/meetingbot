@@ -17,6 +17,7 @@ export interface AgendaItem {
   ownerAttendeeIds?: number[] | null;
   sadhguruComments: string | null;
   attachments: string[] | null;
+  category?: string | null;
   createdAt: Date | null;
   updatedAt: Date | null;
   ownerName?: string | null;

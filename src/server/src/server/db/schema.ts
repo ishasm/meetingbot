@@ -297,7 +297,11 @@ export const bots = pgTable("bots", {
   transcriptionSrt: text("transcription_srt"), // SRT format with timestamps and speaker names
   transcriptionSegments: json("transcription_segments").$type<TranscriptionSegmentData[]>(), // Raw segments for flexible rendering
   transcriptionProvider: varchar("transcription_provider", { length: 50 }),
-  summary: text("summary"), // AI-generated meeting summary
+  summary: text("summary"), // AI-generated meeting summary (legacy, kept for backward compat)
+  summaryMinutes: text("summary_minutes"),
+  summaryActionItems: text("summary_action_items"),
+  summaryDecisions: text("summary_decisions"),
+  summaryOverview: text("summary_overview"),
   speakerTimeframes: json('speaker_timeframes')
     .$type<SpeakerTimeframe[]>()
     .notNull()
@@ -466,8 +470,11 @@ export const meetingAttendees = pgTable("meeting_attendees", {
   attendeeId: integer("attendee_id")
     .references(() => attendees.id, { onDelete: "cascade" })
     .notNull(),
+  attendanceMode: varchar("attendance_mode", { length: 20 }), // "in-person" | "virtual" | "absent"
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+export const attendanceModeEnum = z.enum(["in-person", "virtual", "absent"]);
 
 export const insertMeetingAttendeeSchema = z.object({
   botId: z.number(),
@@ -475,6 +482,12 @@ export const insertMeetingAttendeeSchema = z.object({
 });
 
 export const selectMeetingAttendeeSchema = createSelectSchema(meetingAttendees);
+
+export const updateMeetingAttendeeSchema = z.object({
+  botId: z.number(),
+  attendeeId: z.number(),
+  attendanceMode: attendanceModeEnum.nullable(),
+});
 
 export type InsertMeetingAttendeeType = z.infer<typeof insertMeetingAttendeeSchema>;
 export type SelectMeetingAttendeeType = z.infer<typeof selectMeetingAttendeeSchema>;
@@ -499,9 +512,12 @@ export const agendaItems = pgTable("agenda_items", {
   sadhguruComments: text("sadhguru_comments"),
   attachments: json("attachments").$type<string[]>().default([]),
   source: varchar("source", { length: 20 }).default("manual"), // "manual" | "ai-generated"
+  category: varchar("category", { length: 50 }), // "Policy" | "Budget Approval" | "Follow-up" | "General"
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
+
+export const agendaItemCategoryEnum = z.enum(["Policy", "Budget Approval", "Follow-up", "General"]);
 
 export const insertAgendaItemSchema = z.object({
   botId: z.number(),
@@ -517,12 +533,14 @@ export const insertAgendaItemSchema = z.object({
   sadhguruComments: z.string().optional(),
   attachments: z.array(z.string()).optional(),
   source: z.enum(["manual", "ai-generated"]).optional().default("manual"),
+  category: agendaItemCategoryEnum.optional().nullable(),
 });
 
 export const selectAgendaItemSchema = createSelectSchema(agendaItems).extend({
   attachments: z.array(z.string()).nullable(),
   ownerAttendeeIds: z.array(z.number()).nullable(),
   source: z.enum(["manual", "ai-generated"]).nullable(),
+  category: agendaItemCategoryEnum.nullable(),
 });
 
 export const updateAgendaItemSchema = z.object({
@@ -539,6 +557,7 @@ export const updateAgendaItemSchema = z.object({
   sadhguruComments: z.string().optional().nullable(),
   attachments: z.array(z.string()).optional(),
   source: z.enum(["manual", "ai-generated"]).optional(),
+  category: agendaItemCategoryEnum.nullable().optional(),
 });
 
 export type InsertAgendaItemType = z.infer<typeof insertAgendaItemSchema>;
@@ -561,9 +580,13 @@ export const actionItems = pgTable("action_items", {
   dueDate: timestamp("due_date"),
   isCompleted: boolean("is_completed").default(false),
   priority: varchar("priority", { length: 20 }).default("medium"), // "low" | "medium" | "high"
+  category: varchar("category", { length: 50 }), // "Policy" | "Budget Approval" | "Follow-up" | "General"
+  sortOrder: integer("sort_order").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
+
+export const actionItemCategoryEnum = z.enum(["Policy", "Budget Approval", "Follow-up", "General"]);
 
 export const insertActionItemSchema = z.object({
   botId: z.number(),
@@ -572,6 +595,8 @@ export const insertActionItemSchema = z.object({
   assigneeAttendeeId: z.number().optional().nullable(), // New FK to attendees
   dueDate: z.date().optional(),
   priority: z.enum(["low", "medium", "high"]).optional().default("medium"),
+  category: actionItemCategoryEnum.optional().nullable(),
+  sortOrder: z.number().optional(),
 });
 
 export const selectActionItemSchema = createSelectSchema(actionItems);
@@ -583,8 +608,46 @@ export const updateActionItemSchema = z.object({
   dueDate: z.date().nullable().optional(),
   isCompleted: z.boolean().optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
+  category: actionItemCategoryEnum.nullable().optional(),
 });
 
 export type InsertActionItemType = z.infer<typeof insertActionItemSchema>;
 export type SelectActionItemType = z.infer<typeof selectActionItemSchema>;
 export type UpdateActionItemType = z.infer<typeof updateActionItemSchema>;
+
+/** ACTION ITEM TAGS - Predefined tags for categorization */
+export const actionItemTags = pgTable("action_item_tags", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  color: varchar("color", { length: 20 }).notNull().default("#6b7280"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertActionItemTagSchema = z.object({
+  name: z.string().min(1, "Tag name is required").max(100),
+  color: z.string().optional().default("#6b7280"),
+});
+
+export const selectActionItemTagSchema = createSelectSchema(actionItemTags);
+
+export type InsertActionItemTagType = z.infer<typeof insertActionItemTagSchema>;
+export type SelectActionItemTagType = z.infer<typeof selectActionItemTagSchema>;
+
+/** ACTION ITEM TAG ASSIGNMENTS - Junction table linking tags to action items */
+export const actionItemTagAssignments = pgTable("action_item_tag_assignments", {
+  id: serial("id").primaryKey(),
+  actionItemId: integer("action_item_id")
+    .references(() => actionItems.id, { onDelete: "cascade" })
+    .notNull(),
+  tagId: integer("tag_id")
+    .references(() => actionItemTags.id, { onDelete: "cascade" })
+    .notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertActionItemTagAssignmentSchema = z.object({
+  actionItemId: z.number(),
+  tagId: z.number(),
+});
+
+export const selectActionItemTagAssignmentSchema = createSelectSchema(actionItemTagAssignments);

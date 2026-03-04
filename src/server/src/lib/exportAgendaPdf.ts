@@ -22,7 +22,7 @@ interface ExportAgendaPdfOptions {
 
 /**
  * Export agenda items to a PDF document for printing.
- * Includes columns: Description, Date Added, Discussion Summary, Decision Resolution, Sadhguru Comments
+ * Includes columns: Description, Date Added, Discussion Summary, Decision Resolution, Guidance
  */
 export function exportAgendaToPdf({
   meetingTitle,
@@ -74,7 +74,7 @@ export function exportAgendaToPdf({
         "Date Added",
         "Discussion Summary",
         "Decision / Resolution",
-        "Sadhguru Comments",
+        "Guidance",
       ],
     ],
     body: tableData,
@@ -96,14 +96,13 @@ export function exportAgendaToPdf({
       2: { cellWidth: 22, halign: "center" }, // Date Added
       3: { cellWidth: 55 }, // Discussion Summary
       4: { cellWidth: 55 }, // Decision Resolution
-      5: { cellWidth: 55, minCellHeight: 20 }, // Sadhguru Comments - extra height for writing
+      5: { cellWidth: 55, minCellHeight: 20 }, // Guidance - extra height for writing
     },
     alternateRowStyles: {
       fillColor: [245, 245, 245],
     },
-    // Ensure the Sadhguru Comments column has enough space for handwriting
     didParseCell: function (data) {
-      // Make the Sadhguru Comments cells taller for manual writing
+      // Make the Guidance cells taller for manual writing
       if (data.column.index === 5 && data.section === "body") {
         data.cell.styles.minCellHeight = 25;
       }

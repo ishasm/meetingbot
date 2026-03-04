@@ -6,8 +6,12 @@ import {
   insertActionItemSchema,
   selectActionItemSchema,
   updateActionItemSchema,
+  actionItemTags,
+  actionItemTagAssignments,
+  insertActionItemTagSchema,
+  selectActionItemTagSchema,
 } from "../../db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 
 export const actionItemsRouter = createTRPCRouter({
   generateActionItems: protectedProcedure
@@ -175,7 +179,7 @@ Only include clear action items that were explicitly discussed. Do not make up i
         .select()
         .from(actionItems)
         .where(eq(actionItems.botId, input.botId))
-        .orderBy(actionItems.createdAt);
+        .orderBy(actionItems.sortOrder, actionItems.createdAt);
 
       return { actionItems: items };
     }),
@@ -211,6 +215,7 @@ Only include clear action items that were explicitly discussed. Do not make up i
           assignee: input.assignee ?? null,
           dueDate: input.dueDate ?? null,
           priority: input.priority ?? "medium",
+          category: input.category ?? null,
           isCompleted: false,
         })
         .returning();
@@ -257,6 +262,7 @@ Only include clear action items that were explicitly discussed. Do not make up i
           ...(input.dueDate !== undefined && { dueDate: input.dueDate }),
           ...(input.isCompleted !== undefined && { isCompleted: input.isCompleted }),
           ...(input.priority !== undefined && { priority: input.priority }),
+          ...(input.category !== undefined && { category: input.category }),
           updatedAt: new Date(),
         })
         .where(eq(actionItems.id, input.id))
@@ -313,6 +319,7 @@ Only include clear action items that were explicitly discussed. Do not make up i
     })
     .input(z.object({
       includeCompleted: z.boolean().optional().default(true),
+      category: z.string().optional(),
     }))
     .output(z.object({
       actionItems: z.array(selectActionItemSchema),
@@ -326,10 +333,151 @@ Only include clear action items that were explicitly discussed. Do not make up i
 
       const items = await query;
       
-      const filteredItems = input.includeCompleted 
+      let filteredItems = input.includeCompleted 
         ? items 
         : items.filter(item => !item.isCompleted);
 
+      if (input.category) {
+        filteredItems = filteredItems.filter(item => item.category === input.category);
+      }
+
       return { actionItems: filteredItems };
+    }),
+
+  reorderActionItems: protectedProcedure
+    .input(z.object({
+      botId: z.number(),
+      items: z.array(z.object({
+        id: z.number(),
+        sortOrder: z.number(),
+      })),
+    }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const botResult = await ctx.db
+        .select({ userId: bots.userId })
+        .from(bots)
+        .where(eq(bots.id, input.botId));
+
+      const bot = botResult[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Bot not found");
+      }
+
+      for (const item of input.items) {
+        await ctx.db
+          .update(actionItems)
+          .set({ sortOrder: item.sortOrder })
+          .where(
+            and(
+              eq(actionItems.id, item.id),
+              eq(actionItems.botId, input.botId)
+            )
+          );
+      }
+
+      return { success: true };
+    }),
+
+  // --- Tag Management ---
+
+  getTags: protectedProcedure
+    .output(z.object({ tags: z.array(selectActionItemTagSchema) }))
+    .query(async ({ ctx }) => {
+      const tags = await ctx.db.select().from(actionItemTags).orderBy(actionItemTags.name);
+      return { tags };
+    }),
+
+  createTag: protectedProcedure
+    .input(insertActionItemTagSchema)
+    .output(selectActionItemTagSchema)
+    .mutation(async ({ ctx, input }) => {
+      const result = await ctx.db
+        .insert(actionItemTags)
+        .values({ name: input.name, color: input.color })
+        .returning();
+      const tag = result[0];
+      if (!tag) throw new Error("Failed to create tag");
+      return tag;
+    }),
+
+  deleteTag: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.delete(actionItemTags).where(eq(actionItemTags.id, input.id));
+      return { success: true };
+    }),
+
+  addTagToItem: protectedProcedure
+    .input(z.object({ actionItemId: z.number(), tagId: z.number() }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await ctx.db
+        .select()
+        .from(actionItemTagAssignments)
+        .where(
+          and(
+            eq(actionItemTagAssignments.actionItemId, input.actionItemId),
+            eq(actionItemTagAssignments.tagId, input.tagId)
+          )
+        );
+      if (existing[0]) return { success: true };
+
+      await ctx.db.insert(actionItemTagAssignments).values({
+        actionItemId: input.actionItemId,
+        tagId: input.tagId,
+      });
+      return { success: true };
+    }),
+
+  removeTagFromItem: protectedProcedure
+    .input(z.object({ actionItemId: z.number(), tagId: z.number() }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db
+        .delete(actionItemTagAssignments)
+        .where(
+          and(
+            eq(actionItemTagAssignments.actionItemId, input.actionItemId),
+            eq(actionItemTagAssignments.tagId, input.tagId)
+          )
+        );
+      return { success: true };
+    }),
+
+  getTagsForItems: protectedProcedure
+    .input(z.object({ actionItemIds: z.array(z.number()) }))
+    .output(z.object({
+      assignments: z.record(z.string(), z.array(selectActionItemTagSchema)),
+    }))
+    .query(async ({ ctx, input }) => {
+      if (input.actionItemIds.length === 0) return { assignments: {} };
+
+      const results = await ctx.db
+        .select({
+          actionItemId: actionItemTagAssignments.actionItemId,
+          tagId: actionItemTags.id,
+          tagName: actionItemTags.name,
+          tagColor: actionItemTags.color,
+          tagCreatedAt: actionItemTags.createdAt,
+        })
+        .from(actionItemTagAssignments)
+        .innerJoin(actionItemTags, eq(actionItemTagAssignments.tagId, actionItemTags.id))
+        .where(inArray(actionItemTagAssignments.actionItemId, input.actionItemIds));
+
+      const assignments: Record<string, Array<{ id: number; name: string; color: string; createdAt: Date | null }>> = {};
+      for (const row of results) {
+        const key = String(row.actionItemId);
+        assignments[key] ??= [];
+        assignments[key].push({
+          id: row.tagId,
+          name: row.tagName,
+          color: row.tagColor,
+          createdAt: row.tagCreatedAt,
+        });
+      }
+
+      return { assignments };
     }),
 });

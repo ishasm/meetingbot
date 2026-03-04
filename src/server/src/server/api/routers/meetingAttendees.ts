@@ -7,6 +7,7 @@ import {
   insertMeetingAttendeeSchema,
   selectMeetingAttendeeSchema,
   selectAttendeeSchema,
+  attendanceModeEnum,
 } from "../../db/schema";
 import { eq, and } from "drizzle-orm";
 
@@ -24,6 +25,7 @@ export const meetingAttendeesRouter = createTRPCRouter({
     .output(z.object({
       attendees: z.array(selectAttendeeSchema.extend({
         meetingAttendeeId: z.number(),
+        attendanceMode: z.string().nullable().optional(),
       })),
     }))
     .query(async ({ ctx, input }) => {
@@ -47,6 +49,7 @@ export const meetingAttendeesRouter = createTRPCRouter({
           email: attendees.email,
           role: attendees.role,
           department: attendees.department,
+          attendanceMode: meetingAttendees.attendanceMode,
           createdAt: attendees.createdAt,
           updatedAt: attendees.updatedAt,
         })
@@ -262,5 +265,45 @@ export const meetingAttendeesRouter = createTRPCRouter({
       }
 
       return { count: input.attendeeIds.length };
+    }),
+
+  // Update attendance mode for an attendee in a meeting
+  updateAttendanceMode: protectedProcedure
+    .meta({
+      openapi: {
+        method: "PATCH",
+        path: "/meetings/{botId}/attendees/{attendeeId}/attendance",
+        description: "Update attendance mode (in-person, virtual, absent) for an attendee in a meeting",
+      },
+    })
+    .input(z.object({
+      botId: z.number(),
+      attendeeId: z.number(),
+      attendanceMode: attendanceModeEnum.nullable(),
+    }))
+    .output(z.object({ success: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify bot ownership
+      const botResult = await ctx.db
+        .select({ userId: bots.userId })
+        .from(bots)
+        .where(eq(bots.id, input.botId));
+
+      const bot = botResult[0];
+      if (!bot || bot.userId !== ctx.session.user.id) {
+        throw new Error("Meeting not found");
+      }
+
+      await ctx.db
+        .update(meetingAttendees)
+        .set({ attendanceMode: input.attendanceMode })
+        .where(
+          and(
+            eq(meetingAttendees.botId, input.botId),
+            eq(meetingAttendees.attendeeId, input.attendeeId)
+          )
+        );
+
+      return { success: true };
     }),
 });

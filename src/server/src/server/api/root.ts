@@ -10,6 +10,7 @@ import { attendeesRouter } from "./routers/attendees";
 import { meetingAttendeesRouter } from "./routers/meetingAttendees";
 import { agendaItemsRouter } from "./routers/agendaItems";
 import { googleCalendarRouter } from "./routers/googleCalendar";
+import { searchRouter } from "./routers/search";
 
 /**
  * This is the primary router for your server.
@@ -28,6 +29,7 @@ export const appRouter = createTRPCRouter({
   meetingAttendees: meetingAttendeesRouter,
   agendaItems: agendaItemsRouter,
   googleCalendar: googleCalendarRouter,
+  search: searchRouter,
 });
 
 // export type definition of API

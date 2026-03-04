@@ -46,6 +46,7 @@ export default function AgendaItemsPage() {
   const router = useRouter();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "Open" | "Closed">("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [selectedItem, setSelectedItem] = useState<AgendaItem | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -103,6 +104,10 @@ export default function AgendaItemsPage() {
         (item.ownerName?.toLowerCase().includes(searchLower) ?? false) ||
         (item.meetingTitle?.toLowerCase().includes(searchLower) ?? false)
     );
+  }
+
+  if (categoryFilter !== "all") {
+    agendaItems = agendaItems.filter((item) => item.category === categoryFilter);
   }
 
   const openCount = agendaItemsData?.agendaItems?.filter((i) => i.status === "Open").length ?? 0;
@@ -199,7 +204,7 @@ export default function AgendaItemsPage() {
             </div>
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as typeof statusFilter)}>
+              <Select value={statusFilter} onValueChange={(v: string) => setStatusFilter(v as typeof statusFilter)}>
                 <SelectTrigger className="w-[130px]">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
@@ -207,6 +212,18 @@ export default function AgendaItemsPage() {
                   <SelectItem value="all">All Status</SelectItem>
                   <SelectItem value="Open">Open</SelectItem>
                   <SelectItem value="Closed">Closed</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="Category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  <SelectItem value="Policy">Policy</SelectItem>
+                  <SelectItem value="Budget Approval">Budget Approval</SelectItem>
+                  <SelectItem value="Follow-up">Follow-up</SelectItem>
+                  <SelectItem value="General">General</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -217,7 +234,7 @@ export default function AgendaItemsPage() {
                 <ToggleGroup
                   type="single"
                   value={viewMode}
-                  onValueChange={(value) => value && setViewMode(value as ViewMode)}
+                  onValueChange={(value: string) => value && setViewMode(value as ViewMode)}
                   variant="outline"
                   size="sm"
                 >

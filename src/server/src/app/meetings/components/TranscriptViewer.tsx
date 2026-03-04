@@ -6,7 +6,7 @@ import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Badge } from "~/components/ui/badge";
 import { api } from "~/trpc/react";
-import { FileText, Download, RefreshCw, Sparkles, Clock, User, Subtitles } from "lucide-react";
+import { FileText, Download, RefreshCw, Sparkles, Clock, User, Subtitles, ScrollText, CheckSquare, Gavel, BookOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 interface TranscriptViewerProps {
@@ -49,8 +49,11 @@ function getSpeakerColor(speaker: string): string {
   return colors[Math.abs(hash) % colors.length] ?? colors[0]!;
 }
 
+type SummaryTab = "overview" | "minutes" | "actionItems" | "decisions";
+
 export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("segments");
+  const [summaryTab, setSummaryTab] = useState<SummaryTab>("overview");
 
   const utils = api.useUtils();
 
@@ -304,31 +307,100 @@ export function TranscriptViewer({ botId, hasRecording }: TranscriptViewerProps)
       </Card>
 
       {/* Show summary card if there's a saved summary, generating, or just generated */}
-      {(Boolean(savedSummary?.summary) || summaryMutation.isPending || isLoadingSummary) && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5" />
-              Meeting Summary
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {summaryMutation.isPending || isLoadingSummary ? (
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-3/4" />
-                <Skeleton className="h-4 w-5/6" />
-              </div>
-            ) : savedSummary?.summary ? (
-              <div className="bg-primary/5 rounded-lg p-6">
-                <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-headings:text-foreground prose-p:text-foreground/90 prose-p:leading-relaxed prose-ul:my-3 prose-li:my-1 prose-strong:text-foreground prose-headings:mt-4 prose-headings:mb-2 first:prose-headings:mt-0">
-                  <ReactMarkdown>{savedSummary.summary}</ReactMarkdown>
+      {(Boolean(savedSummary?.summary) || summaryMutation.isPending || isLoadingSummary) && (() => {
+        // Try to extract structured data from the DB fields first,
+        // or fall back to parsing JSON from the legacy summary field
+        let overview = savedSummary?.summaryOverview ?? null;
+        let minutes = savedSummary?.summaryMinutes ?? null;
+        let aiActionItems = savedSummary?.summaryActionItems ?? null;
+        let decisions = savedSummary?.summaryDecisions ?? null;
+
+        // If structured fields are empty but legacy summary looks like JSON, parse it client-side
+        if (!overview && !minutes && !aiActionItems && !decisions && savedSummary?.summary) {
+          try {
+            const trimmed = savedSummary.summary.trim();
+            if (trimmed.startsWith("{")) {
+              const parsed = JSON.parse(trimmed) as Record<string, string>;
+              overview = parsed.summary ?? null;
+              minutes = parsed.minutes ?? null;
+              aiActionItems = parsed.actionItems ?? parsed.action_items ?? null;
+              decisions = parsed.decisions ?? null;
+            }
+          } catch {
+            // Not JSON, that's fine - use as legacy markdown
+          }
+        }
+
+        const hasStructured = Boolean(overview ?? minutes ?? aiActionItems ?? decisions);
+
+        const summaryTabs: { key: SummaryTab; label: string; icon: React.ReactNode; content: string | null }[] = [
+          { key: "overview", label: "Summary", icon: <BookOpen className="h-4 w-4" />, content: overview },
+          { key: "minutes", label: "Minutes", icon: <ScrollText className="h-4 w-4" />, content: minutes },
+          { key: "actionItems", label: "Action Items", icon: <CheckSquare className="h-4 w-4" />, content: aiActionItems },
+          { key: "decisions", label: "Decisions", icon: <Gavel className="h-4 w-4" />, content: decisions },
+        ];
+
+        const activeContent = summaryTabs.find((t) => t.key === summaryTab)?.content;
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5" />
+                Meeting Summary
+              </CardTitle>
+            </CardHeader>
+
+            {/* Tabs for structured summary */}
+            {hasStructured && !summaryMutation.isPending && !isLoadingSummary && (
+              <div className="px-6 pb-2">
+                <div className="flex gap-1 p-1 bg-muted rounded-lg w-fit">
+                  {summaryTabs.map((tab) => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setSummaryTab(tab.key)}
+                      className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${
+                        summaryTab === tab.key
+                          ? "bg-background shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {tab.icon}
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
               </div>
-            ) : null}
-          </CardContent>
-        </Card>
-      )}
+            )}
+
+            <CardContent>
+              {summaryMutation.isPending || isLoadingSummary ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-4 w-5/6" />
+                </div>
+              ) : hasStructured ? (
+                <div className="bg-primary/5 rounded-lg p-6">
+                  <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-headings:text-foreground prose-p:text-foreground/90 prose-p:leading-relaxed prose-ul:my-3 prose-li:my-1 prose-strong:text-foreground prose-headings:mt-4 prose-headings:mb-2 first:prose-headings:mt-0">
+                    {activeContent ? (
+                      <ReactMarkdown>{activeContent}</ReactMarkdown>
+                    ) : (
+                      <p className="text-muted-foreground italic">No content available for this section.</p>
+                    )}
+                  </div>
+                </div>
+              ) : savedSummary?.summary ? (
+                <div className="bg-primary/5 rounded-lg p-6">
+                  <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-headings:text-foreground prose-p:text-foreground/90 prose-p:leading-relaxed prose-ul:my-3 prose-li:my-1 prose-strong:text-foreground prose-headings:mt-4 prose-headings:mb-2 first:prose-headings:mt-0">
+                    <ReactMarkdown>{savedSummary.summary}</ReactMarkdown>
+                  </div>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {summaryMutation.error && (
         <div className="rounded-md bg-red-50 p-3 text-sm text-red-600">

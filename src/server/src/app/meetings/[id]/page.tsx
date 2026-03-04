@@ -499,7 +499,7 @@ export default function MeetingDetailPage() {
 
       {/* GC-Only: Meeting Attendees Section - Show for all statuses */}
       {isGC && (
-        <MeetingAttendees botId={id} />
+        <MeetingAttendees botId={id} meetingStatus={bot.status} />
       )}
 
       {/* GC-Only: Agenda Items Section - Show for all statuses */}

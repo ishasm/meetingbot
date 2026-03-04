@@ -42,6 +42,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "~/components/ui/tooltip";
+import { DragDropContext, Droppable, Draggable, type DropResult, type DroppableProvided, type DraggableProvided, type DraggableStateSnapshot } from "@hello-pangea/dnd";
 import { api } from "~/trpc/react";
 import { 
   ClipboardList, 
@@ -60,6 +61,7 @@ import {
   Eye,
   FileDown,
   Bot,
+  GripVertical,
 } from "lucide-react";
 import { exportAgendaToPdf } from "~/lib/exportAgendaPdf";
 import { cn } from "~/lib/utils";
@@ -133,6 +135,25 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
       void utils.agendaItems.getByMeeting.invalidate({ botId });
     },
   });
+
+  const reorderMutation = api.agendaItems.reorder.useMutation({
+    onSuccess: () => {
+      void utils.agendaItems.getByMeeting.invalidate({ botId });
+    },
+  });
+
+  const handleDragEnd = (result: DropResult) => {
+    if (!result.destination) return;
+    const items = Array.from(agendaItemsData?.agendaItems ?? []);
+    const [reordered] = items.splice(result.source.index, 1);
+    if (!reordered) return;
+    items.splice(result.destination.index, 0, reordered);
+
+    reorderMutation.mutate({
+      botId,
+      items: items.map((item, index) => ({ id: item.id, serialNum: index + 1 })),
+    });
+  };
 
   const generateSummariesMutation = api.agendaItems.generateSummaries.useMutation({
     onSuccess: (data) => {
@@ -251,7 +272,7 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
                     <Label htmlFor="duration">Duration</Label>
                     <Select
                       value={formData.duration}
-                      onValueChange={(v) => setFormData({ ...formData, duration: v })}
+                      onValueChange={(v: string) => setFormData({ ...formData, duration: v })}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="Select duration" />
@@ -397,156 +418,190 @@ export function MeetingAgendaItems({ botId, hasTranscription, meetingTitle, meet
             <p className="text-sm mt-1">Add agenda items to track discussion topics</p>
           </div>
         ) : (
-          <div className="space-y-2">
-            {agendaItems.map((item) => {
-              const hasDetails = item.discussionSummary ?? item.decisionResolution;
-              
-              return (
+          <DragDropContext onDragEnd={handleDragEnd}>
+            <Droppable droppableId="agenda-items">
+              {(provided: DroppableProvided) => (
                 <div
-                  key={item.id}
-                  className={cn(
-                    "border rounded-lg transition-all hover:shadow-md hover:border-primary/50 cursor-pointer group",
-                    item.status === "Closed" ? "bg-muted/30" : "bg-card"
-                  )}
-                  onClick={() => handleOpenDetail(item)}
+                  ref={provided.innerRef}
+                  {...provided.droppableProps}
+                  className="space-y-2"
                 >
-                  <div className="p-4">
-                    <div className="flex items-start gap-4">
-                      {/* Serial number */}
-                      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-semibold text-primary">
-                        {item.serialNum}
-                      </div>
-                      
-                      {/* Content */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <p className={cn(
-                            "font-medium leading-relaxed line-clamp-2",
-                            item.status === "Closed" && "line-through text-muted-foreground"
-                          )}>
-                            {item.description}
-                          </p>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {item.source === "ai-generated" && (
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Badge
-                                      variant="outline"
-                                      className="bg-purple-50 text-purple-700 border-purple-200"
-                                    >
-                                      <Bot className="h-3 w-3 mr-1" />
-                                      AI
-                                    </Badge>
-                                  </TooltipTrigger>
-                                  <TooltipContent>AI-generated agenda item</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
+                  {agendaItems.map((item, index) => {
+                    const hasDetails = item.discussionSummary ?? item.decisionResolution;
+                    
+                    return (
+                      <Draggable key={item.id} draggableId={String(item.id)} index={index}>
+                        {(provided: DraggableProvided, snapshot: DraggableStateSnapshot) => (
+                          <div
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
+                            className={cn(
+                              "border rounded-lg transition-all hover:shadow-md hover:border-primary/50 cursor-pointer group",
+                              item.status === "Closed" ? "bg-muted/30" : "bg-card",
+                              snapshot.isDragging && "shadow-lg border-primary"
                             )}
-                            <Badge
-                              variant="outline"
-                              className={cn("shrink-0", statusColors[item.status ?? "Open"])}
-                            >
-                              {item.status ?? "Open"}
-                            </Badge>
+                            onClick={() => handleOpenDetail(item)}
+                          >
+                            <div className="p-4">
+                              <div className="flex items-start gap-4">
+                                {/* Drag Handle */}
+                                <div
+                                  {...provided.dragHandleProps}
+                                  className="mt-2 cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <GripVertical className="h-4 w-4" />
+                                </div>
+
+                                {/* Serial number */}
+                                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-semibold text-primary">
+                                  {item.serialNum}
+                                </div>
+                                
+                                {/* Content */}
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-start justify-between gap-2 mb-2">
+                                    <p className={cn(
+                                      "font-medium leading-relaxed line-clamp-2",
+                                      item.status === "Closed" && "line-through text-muted-foreground"
+                                    )}>
+                                      {item.description}
+                                    </p>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      {item.category && (
+                                        <Badge
+                                          variant="outline"
+                                          className="bg-amber-50 text-amber-700 border-amber-200"
+                                        >
+                                          {item.category}
+                                        </Badge>
+                                      )}
+                                    {item.source === "ai-generated" && (
+                                        <TooltipProvider>
+                                          <Tooltip>
+                                            <TooltipTrigger asChild>
+                                              <Badge
+                                                variant="outline"
+                                                className="bg-purple-50 text-purple-700 border-purple-200"
+                                              >
+                                                <Bot className="h-3 w-3 mr-1" />
+                                                AI
+                                              </Badge>
+                                            </TooltipTrigger>
+                                            <TooltipContent>AI-generated agenda item</TooltipContent>
+                                          </Tooltip>
+                                        </TooltipProvider>
+                                      )}
+                                      <Badge
+                                        variant="outline"
+                                        className={cn("shrink-0", statusColors[item.status ?? "Open"])}
+                                      >
+                                        {item.status ?? "Open"}
+                                      </Badge>
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Meta info row */}
+                                  <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+                                    {item.duration && (
+                                      <div className="flex items-center gap-1.5">
+                                        <Clock className="h-3.5 w-3.5" />
+                                        <span>{item.duration}</span>
+                                      </div>
+                                    )}
+
+                                    {item.ownerNames && item.ownerNames.length > 0 && (
+                                      <div className="flex items-center gap-1.5">
+                                        <User className="h-3.5 w-3.5" />
+                                        <span className="truncate max-w-[200px]">
+                                          {item.ownerNames.map((o) => o.name).join(", ")}
+                                        </span>
+                                      </div>
+                                    )}
+
+                                    {hasDetails && (
+                                      <div className="flex items-center gap-2">
+                                        {item.discussionSummary && (
+                                          <TooltipProvider>
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <div className="flex items-center gap-1 text-blue-600">
+                                                  <MessageSquare className="h-3.5 w-3.5" />
+                                                </div>
+                                              </TooltipTrigger>
+                                              <TooltipContent>Has discussion summary</TooltipContent>
+                                            </Tooltip>
+                                          </TooltipProvider>
+                                        )}
+                                        {item.decisionResolution && (
+                                          <TooltipProvider>
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <div className="flex items-center gap-1 text-green-600">
+                                                  <Gavel className="h-3.5 w-3.5" />
+                                                </div>
+                                              </TooltipTrigger>
+                                              <TooltipContent>Has decision/resolution</TooltipContent>
+                                            </Tooltip>
+                                          </TooltipProvider>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Actions */}
+                                <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <TooltipProvider>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Button
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-8 w-8"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleOpenDetail(item);
+                                          }}
+                                        >
+                                          <Eye className="h-4 w-4" />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>View details</TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                  <TooltipProvider>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Button
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDelete(item.id);
+                                          }}
+                                          disabled={deleteMutation.isPending}
+                                        >
+                                          <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>Delete</TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                </div>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                        
-                        {/* Meta info row */}
-                        <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
-                          {item.duration && (
-                            <div className="flex items-center gap-1.5">
-                              <Clock className="h-3.5 w-3.5" />
-                              <span>{item.duration}</span>
-                            </div>
-                          )}
-
-                          {item.ownerNames && item.ownerNames.length > 0 && (
-                            <div className="flex items-center gap-1.5">
-                              <User className="h-3.5 w-3.5" />
-                              <span className="truncate max-w-[200px]">
-                                {item.ownerNames.map((o) => o.name).join(", ")}
-                              </span>
-                            </div>
-                          )}
-
-                          {hasDetails && (
-                            <div className="flex items-center gap-2">
-                              {item.discussionSummary && (
-                                <TooltipProvider>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <div className="flex items-center gap-1 text-blue-600">
-                                        <MessageSquare className="h-3.5 w-3.5" />
-                                      </div>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Has discussion summary</TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
-                              )}
-                              {item.decisionResolution && (
-                                <TooltipProvider>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <div className="flex items-center gap-1 text-green-600">
-                                        <Gavel className="h-3.5 w-3.5" />
-                                      </div>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Has decision/resolution</TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-8 w-8"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenDetail(item);
-                                }}
-                              >
-                                <Eye className="h-4 w-4" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>View details</TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDelete(item.id);
-                                }}
-                                disabled={deleteMutation.isPending}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Delete</TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </div>
-                    </div>
-                  </div>
+                        )}
+                      </Draggable>
+                    );
+                  })}
+                  {provided.placeholder}
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </Droppable>
+          </DragDropContext>
         )}
 
         {/* Detail Modal */}
