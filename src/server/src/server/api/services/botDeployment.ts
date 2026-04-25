@@ -61,6 +61,10 @@ export function selectBotTaskDefinition(
   switch (platform?.toLowerCase()) {
     case "google":
       return env.ECS_TASK_DEFINITION_MEET;
+    case "google-voice":
+      // Voice assistant uses the same Meet task definition template for now; a
+      // dedicated ECS task definition can be introduced later if needed.
+      return env.ECS_TASK_DEFINITION_MEET;
     case "teams":
       return env.ECS_TASK_DEFINITION_TEAMS;
     case "zoom":
@@ -83,6 +87,8 @@ export function selectBotDockerImage(
   switch (platform?.toLowerCase()) {
     case "google":
       return "meetingbot-meet:latest";
+    case "google-voice":
+      return "meetingbot-meet-voice:latest";
     case "teams":
       return "meetingbot-teams:latest";
     case "zoom":
@@ -118,8 +124,12 @@ export async function deployBotWithDockerCompose(
   const containerName = `meetingbot-bot-${botId}`;
   const network = env.BOT_NETWORK ?? "meetingbot_network";
 
+  const isVoiceBot = platform === "google-voice";
+  const orchestratorUrl =
+    process.env.ORCHESTRATOR_URL ?? "http://orchestrator:8080";
+
   // Environment variables for the bot container
-  const envVars = [
+  const envVarsArr = [
     `-e BOT_DATA='${JSON.stringify(config)}'`,
     `-e AWS_BUCKET_NAME=${env.AWS_BUCKET_NAME}`,
     `-e AWS_REGION=${env.AWS_REGION}`,
@@ -130,7 +140,27 @@ export async function deployBotWithDockerCompose(
     `-e BACKEND_URL=${process.env.BACKEND_URL ?? env.NEXTAUTH_URL ?? 'http://server:3000'}/api/trpc`,
     `-e NODE_ENV=production`,
     `-e DISPLAY=:99`,
-  ].join(' ');
+  ];
+
+  const extraFlags: string[] = [];
+
+  if (isVoiceBot) {
+    envVarsArr.push(
+      `-e ORCHESTRATOR_URL=${orchestratorUrl}`,
+      // We bind-mount the anonymous socket file directly to /tmp/pulse-socket
+      // so the non-root container user (`meetbot`) doesn't need traverse
+      // permissions on the host's $XDG_RUNTIME_DIR/pulse directory.
+      `-e PULSE_SERVER=unix:/tmp/pulse-socket`,
+      `-e PULSE_SINK=${process.env.PULSE_SINK ?? "BotSpeaker"}`,
+      `-e PULSE_SOURCE=${process.env.PULSE_SOURCE ?? "BotMic"}`,
+      `-e AUDIO_CHUNK_SECONDS=${process.env.AUDIO_CHUNK_SECONDS ?? "5"}`,
+      `-e CONTROL_PORT=7070`,
+    );
+    const pulseRuntimePath = process.env.PULSE_RUNTIME_PATH ?? "/run/user/1000/pulse";
+    extraFlags.push(`-v ${pulseRuntimePath}/anon-native:/tmp/pulse-socket`);
+  }
+
+  const envVars = envVarsArr.join(' ');
 
   try {
     // Create and start the bot container using Docker CLI
@@ -141,6 +171,7 @@ export async function deployBotWithDockerCompose(
       `--name ${containerName}`,
       `--network ${network}`,
       '--shm-size=2g', // 2GB shared memory for browsers
+      ...extraFlags,
       envVars,
       imageName
     ].join(' ');
@@ -149,13 +180,23 @@ export async function deployBotWithDockerCompose(
     const containerId = await runDockerCommand(dockerCommand);
     console.log(`Started bot container ${containerName} (${containerId}) for bot ${botId}`);
 
-    // Start log streaming in the background (don't await)
+    // #region agent log
+    /* eslint-disable */
+    fetch('http://127.0.0.1:7437/ingest/51bd26eb-0ec2-4933-a8d9-d1d03806fe49',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'817594'},body:JSON.stringify({sessionId:'817594',runId:'post-fix',hypothesisId:'H1',location:'botDeployment.ts:179',message:'bot container started',data:{botId,containerId:String(containerId).slice(0,12),containerName,platform:config.meetingInfo.platform},timestamp:Date.now()})}).catch(function(){});
+    /* eslint-enable */
+    // #endregion
+
     streamContainerLogs(containerName, botId).catch(error => {
       console.error(`Failed to stream logs for bot ${botId}:`, error);
     });
 
   } catch (error) {
     console.error(`Failed to deploy bot ${botId} with Docker:`, error);
+    // #region agent log
+    /* eslint-disable */
+    fetch('http://127.0.0.1:7437/ingest/51bd26eb-0ec2-4933-a8d9-d1d03806fe49',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'817594'},body:JSON.stringify({sessionId:'817594',runId:'post-fix',hypothesisId:'H1',location:'botDeployment.ts:187',message:'bot deploy failed',data:{botId,errorMessage:error instanceof Error?error.message.slice(0,500):String(error).slice(0,500)},timestamp:Date.now()})}).catch(function(){});
+    /* eslint-enable */
+    // #endregion
     throw error;
   }
 }
@@ -214,11 +255,18 @@ export async function deployBot({
 
     // Merge default config with user provided config
 
+    // If voice-assistant is enabled and the URL is a Meet URL, route through
+    // the new "google-voice" platform so the meet-voice Docker image is used.
+    const effectiveMeetingInfo: typeof bot.meetingInfo = bot.enableVoiceAssistant
+      && bot.meetingInfo?.platform === "google"
+      ? { ...bot.meetingInfo, platform: "google-voice" }
+      : bot.meetingInfo;
+
     const config: BotConfig = {
       id: botId,
       userId: bot.userId,
       meetingTitle: bot.meetingTitle,
-      meetingInfo: bot.meetingInfo,
+      meetingInfo: effectiveMeetingInfo,
       startTime: bot.startTime,
       endTime: bot.endTime,
       botDisplayName: bot.botDisplayName,
@@ -226,6 +274,14 @@ export async function deployBot({
       heartbeatInterval: bot.heartbeatInterval,
       automaticLeave: bot.automaticLeave,
       callbackUrl: bot.callbackUrl ?? undefined,
+      voiceAssistant: {
+        enabled: bot.enableVoiceAssistant ?? false,
+        orchestratorUrl:
+          process.env.ORCHESTRATOR_URL ?? undefined,
+      },
+      recording: {
+        enabled: bot.enableRecording ?? true,
+      },
     };
 
     if (dev) {

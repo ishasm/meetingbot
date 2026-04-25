@@ -8,6 +8,7 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
 import { Calendar } from "~/components/ui/calendar";
+import { Checkbox } from "~/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { CalendarIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
@@ -44,6 +45,8 @@ export function MeetingForm({ onSuccess, redirectToMeeting = true, defaultDate }
   const [meetingUrl, setMeetingUrl] = useState("");
   const [meetingTitle, setMeetingTitle] = useState("");
   const [scheduledDate, setScheduledDate] = useState<Date | undefined>(defaultDate ?? new Date());
+  const [enableRecording, setEnableRecording] = useState(true);
+  const [enableVoiceAssistant, setEnableVoiceAssistant] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const router = useRouter();
 
@@ -61,6 +64,8 @@ export function MeetingForm({ onSuccess, redirectToMeeting = true, defaultDate }
       setMeetingUrl("");
       setMeetingTitle("");
       setScheduledDate(new Date());
+      setEnableRecording(true);
+      setEnableVoiceAssistant(false);
       setErrorMessage(null);
       void utils.bots.getUserMeetings.invalidate();
       onSuccess?.();
@@ -99,10 +104,17 @@ export function MeetingForm({ onSuccess, redirectToMeeting = true, defaultDate }
         : `https://meet.google.com/${meetingUrl}`;
     }
 
+    if (enableVoiceAssistant && detectedPlatform !== "google") {
+      setErrorMessage("Voice assistant is currently only supported for Google Meet.");
+      return;
+    }
+
     createMeetingMutation.mutate({
       meetingUrl: normalizedUrl,
       meetingTitle: meetingTitle || undefined,
       scheduledDate: scheduledDate?.toISOString(),
+      enableRecording,
+      enableVoiceAssistant,
     });
   };
 
@@ -181,6 +193,45 @@ export function MeetingForm({ onSuccess, redirectToMeeting = true, defaultDate }
                 />
               </PopoverContent>
             </Popover>
+          </div>
+
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="enableRecording"
+                checked={enableRecording}
+                onCheckedChange={(v) => setEnableRecording(v === true)}
+                disabled={createMeetingMutation.isPending}
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor="enableRecording" className="cursor-pointer">
+                  Record meeting
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Capture audio/video and upload to storage for transcription.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="enableVoiceAssistant"
+                checked={enableVoiceAssistant}
+                onCheckedChange={(v) => setEnableVoiceAssistant(v === true)}
+                disabled={
+                  createMeetingMutation.isPending || detectedPlatform !== "google"
+                }
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor="enableVoiceAssistant" className="cursor-pointer">
+                  AI voice assistant (beta)
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Bot listens for &quot;Hey bot&quot; and replies with voice via
+                  Gemini Live. Google Meet only.
+                </p>
+              </div>
+            </div>
           </div>
 
           <Button

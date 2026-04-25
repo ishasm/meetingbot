@@ -6,7 +6,16 @@ export type MeetingInfo = {
   tenantId?: string;
   messageId?: string;
   threadId?: string;
-  platform?: "zoom" | "teams" | "google";
+  platform?: "zoom" | "teams" | "google" | "google-voice";
+};
+
+export type VoiceAssistantConfig = {
+  enabled: boolean;
+  orchestratorUrl?: string;
+};
+
+export type RecordingConfig = {
+  enabled: boolean;
 };
 
 export type AutomaticLeave = {
@@ -28,6 +37,8 @@ export type BotConfig = {
   heartbeatInterval: number;
   automaticLeave: AutomaticLeave;
   callbackUrl?: string;
+  voiceAssistant?: VoiceAssistantConfig;
+  recording?: RecordingConfig;
 };
 
 export enum Status {

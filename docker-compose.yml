@@ -75,6 +75,13 @@ services:
       # Google OAuth (for Google Calendar integration)
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Voice-assistant (meet-voice bot) deployment settings forwarded to
+      # dynamically-spawned bot containers via `docker run -v`.
+      PULSE_RUNTIME_PATH: ${PULSE_RUNTIME_PATH:-/run/user/1000/pulse}
+      PULSE_SINK: ${PULSE_SINK:-BotSpeaker}
+      PULSE_SOURCE: ${PULSE_SOURCE:-BotMic}
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-http://orchestrator:8080}
+      AUDIO_CHUNK_SECONDS: ${AUDIO_CHUNK_SECONDS:-5}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - recordings:/app/recordings
@@ -88,6 +95,41 @@ services:
     restart: unless-stopped
 
   # Bot containers will be created dynamically by the server
+
+  # Gemini Live Voice Assistant orchestrator (Mode A)
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: meetingbot_orchestrator
+    environment:
+      PIPELINE_MODE: ${PIPELINE_MODE:-gemini_live}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-live-preview}
+      GEMINI_VOICE: ${GEMINI_VOICE:-Aoede}
+      PROACTIVE_AUDIO: ${PROACTIVE_AUDIO:-true}
+      AUDIO_CHUNK_SECONDS: ${AUDIO_CHUNK_SECONDS:-5}
+      TRIGGER_PHRASE: ${TRIGGER_PHRASE:-hey bot}
+      BOT_NAME: ${BOT_NAME:-AI Assistant}
+      PULSE_SINK: ${PULSE_SINK:-BotSpeaker}
+      PULSE_SOURCE: ${PULSE_SOURCE:-BotMic}
+      SELF_MUTE_ENABLED: ${SELF_MUTE_ENABLED:-true}
+      ORCHESTRATOR_PORT: ${ORCHESTRATOR_PORT:-8080}
+      SYSTEM_PROMPT_FILE: ${SYSTEM_PROMPT_FILE:-prompts/gemini_live.txt}
+      MEETINGBOT_API_URL: http://server:3000
+      # Bind the auth-anonymous socket file directly into /tmp so the
+      # container doesn't need traverse perms on the host pulse dir
+      # (systemd-logind resets it to 700 on some distros).
+      PULSE_SERVER: unix:/tmp/pulse-socket
+    volumes:
+      - ${PULSE_RUNTIME_PATH:-/run/user/1000/pulse}/anon-native:/tmp/pulse-socket
+    ports:
+      # Host port is configurable (default 8090) because 8080 is often taken
+      # by other services; the in-network URL used by bots stays at :8080.
+      - "${ORCHESTRATOR_HOST_PORT:-8090}:8080"
+    networks:
+      - meetingbot_network
+    restart: unless-stopped
 
 volumes:
   postgres_data:

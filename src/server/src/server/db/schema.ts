@@ -215,9 +215,23 @@ export const meetingInfoSchema = z.object({
   tenantId: z.string().optional().describe("Tenant ID"),
   messageId: z.string().optional().describe("Message ID"),
   threadId: z.string().optional().describe("Thread ID"),
-  platform: z.enum(["zoom", "teams", "google"]).optional().describe("Platform"),
+  platform: z
+    .enum(["zoom", "teams", "google", "google-voice"])
+    .optional()
+    .describe("Platform"),
 });
 export type MeetingInfo = z.infer<typeof meetingInfoSchema>;
+
+export const voiceAssistantConfigSchema = z.object({
+  enabled: z.boolean(),
+  orchestratorUrl: z.string().url().optional(),
+});
+export type VoiceAssistantConfig = z.infer<typeof voiceAssistantConfigSchema>;
+
+export const recordingConfigSchema = z.object({
+  enabled: z.boolean(),
+});
+export type RecordingConfig = z.infer<typeof recordingConfigSchema>;
 
 // Define base status codes
 export const status = z.enum([
@@ -318,6 +332,9 @@ export const bots = pgTable("bots", {
   automaticLeave: json("automatic_leave").$type<AutomaticLeave>().notNull(),
   callbackUrl: varchar("callback_url", { length: 1024 }),
   pendingAction: varchar("pending_action", { length: 20 }).$type<PendingAction | null>(),
+  // voice-assistant / recording toggles
+  enableRecording: boolean("enable_recording").notNull().default(true),
+  enableVoiceAssistant: boolean("enable_voice_assistant").notNull().default(false),
   // timestamps
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -336,6 +353,11 @@ export const insertBotSchema = z.object({
     .url()
     .optional()
     .describe("URL to receive bot event notifications"),
+  enableRecording: z.boolean().optional().describe("Whether this bot should record the meeting"),
+  enableVoiceAssistant: z
+    .boolean()
+    .optional()
+    .describe("Whether this bot should run the Gemini Live voice assistant"),
 });
 export type InsertBotType = z.infer<typeof insertBotSchema>;
 
@@ -363,6 +385,8 @@ export const botConfigSchema = z.object({
     .url()
     .optional()
     .describe("URL to receive bot event notifications"),
+  voiceAssistant: voiceAssistantConfigSchema.optional(),
+  recording: recordingConfigSchema.optional(),
 });
 export type BotConfig = z.infer<typeof botConfigSchema>;
 

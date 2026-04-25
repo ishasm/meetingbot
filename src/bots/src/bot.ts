@@ -115,6 +115,7 @@ export class Bot implements BotInterface {
 const validPlatformForImage = (platform: string, imageName: string): boolean => {
   if (platform === imageName) return true;
   if (platform === "google" && imageName === "meet") return true; //ignore any mismatch between platform and bot name
+  if (platform === "google-voice" && imageName === "meet-voice") return true;
 
   return false;
 }
@@ -140,6 +141,13 @@ export const createBot = async (botData: BotConfig): Promise<Bot> => {
     case "google":
       const { MeetsBot } = await import("../meet/src/bot");
       return new MeetsBot(botData, async (eventType: EventCode, data: any) => {
+        await reportEvent(botId, eventType, data);
+      });
+
+    // Google Meet with Gemini Live voice assistant
+    case "google-voice":
+      const { MeetsVoiceBot } = await import("../meet-voice/src/bot");
+      return new MeetsVoiceBot(botData, async (eventType: EventCode, data: any) => {
         await reportEvent(botId, eventType, data);
       });
 

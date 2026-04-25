@@ -125,6 +125,8 @@ export const botsRouter = createTRPCRouter({
             inactivityTimeout: 300000, // 5 minutes
           },
           callbackUrl: input.callbackUrl, // Credit to @martinezpl for this line -- cannot merge at time of writing due to capstone requirements
+          enableRecording: input.enableRecording ?? true,
+          enableVoiceAssistant: input.enableVoiceAssistant ?? false,
         };
 
         const result = await ctx.db.insert(bots).values(dbInput).returning();
@@ -1053,6 +1055,8 @@ Each value should be a markdown-formatted string. Be thorough but concise.`;
       meetingTitle: z.string().optional(),
       botDisplayName: z.string().optional(),
       scheduledDate: z.string().optional(), // ISO date string for scheduling
+      enableRecording: z.boolean().optional(),
+      enableVoiceAssistant: z.boolean().optional(),
     }))
     .output(selectBotSchema)
     .mutation(async ({ input, ctx }) => {
@@ -1060,6 +1064,11 @@ Each value should be a markdown-formatted string. Be thorough but concise.`;
       const meetingInfo = parseMeetingUrl(input.meetingUrl);
       if (!meetingInfo) {
         throw new Error("Invalid meeting URL. Please provide a valid Google Meet, Zoom, or Teams meeting link.");
+      }
+
+      // Voice assistant is only supported on Google Meet today.
+      if (input.enableVoiceAssistant && meetingInfo.platform !== "google") {
+        throw new Error("Voice assistant is currently only supported for Google Meet.");
       }
 
       // Use scheduled date if provided, otherwise use current date
@@ -1079,6 +1088,8 @@ Each value should be a markdown-formatted string. Be thorough but concise.`;
           everyoneLeftTimeout: 300000,
           inactivityTimeout: 300000,
         },
+        enableRecording: input.enableRecording ?? true,
+        enableVoiceAssistant: input.enableVoiceAssistant ?? false,
       };
 
       const result = await ctx.db.insert(bots).values(dbInput).returning();

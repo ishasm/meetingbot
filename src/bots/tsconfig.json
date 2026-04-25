@@ -31,6 +31,6 @@
     /* Tests */
     "types": ["jest"],
   },
-  "include": ["src/**/*", "meet/src/**/*", "teams/src/**/*", "zoom/src/**/*"],
+  "include": ["src/**/*", "meet/src/**/*", "meet-voice/src/**/*", "teams/src/**/*", "zoom/src/**/*"],
   "exclude": ["node_modules", "../../backend/**/*"]
 }
